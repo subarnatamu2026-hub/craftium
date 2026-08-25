@@ -1,0 +1,150 @@
+-- Sheep-Info (VoxeLibre) Craftium environment
+--
+-- Spawns a flock of sheep (mobs_mc:sheep) around the agent and, every step,
+-- writes the full state of every nearby sheep to a JSON file in the world
+-- directory. The Python side reads that file after each env.step() and merges
+-- it into the `info` dict (see sheep_info_demo.py).
+
+voxel_radius = {
+	x = minetest.settings:get("voxel_obs_rx"),
+	y = minetest.settings:get("voxel_obs_ry"),
+	z = minetest.settings:get("voxel_obs_rz")
+}
+
+-- How big the flock is and how far it scatters (overridable from Python via
+-- minetest_conf: num_sheep / sheep_spawn_radius).
+local num_sheep     = tonumber(minetest.settings:get("num_sheep")) or 50
+local spawn_radius  = tonumber(minetest.settings:get("sheep_spawn_radius")) or 10
+-- Radius (nodes) within which sheep are reported to Python each step.
+local report_radius = tonumber(minetest.settings:get("sheep_report_radius")) or 40
+
+local SHEEP_NAME = "mobs_mc:sheep"
+
+-- Path the observation file is written to. It lives inside the world directory,
+-- which is always writable under Luanti's mod security.
+local obs_path = minetest.get_worldpath() .. DIR_DELIM .. "sheep_obs.json"
+
+local step_count = 0
+local next_id = 0
+
+-- Spawn one sheep at pos and tag it with a stable id so Python can track it
+-- across steps. Prefer VoxeLibre's own spawner; fall back to a raw entity add.
+local function spawn_one(pos)
+	local obj
+	if mcl_mobs and mcl_mobs.spawn then
+		obj = mcl_mobs.spawn(pos, SHEEP_NAME)
+	end
+	if not obj then
+		obj = minetest.add_entity(pos, SHEEP_NAME)
+	end
+	if obj then
+		local ent = obj:get_luaentity()
+		if ent then
+			ent._flock_id = next_id
+			next_id = next_id + 1
+		end
+	end
+	return obj
+end
+
+-- Scatter `n` sheep in a disk of `radius` nodes centred on `center`.
+local function spawn_flock(center, n, radius)
+	for _ = 1, n do
+		local angle = math.random() * 2 * math.pi
+		local dist = math.sqrt(math.random()) * radius
+		spawn_one({
+			x = center.x + math.cos(angle) * dist,
+			y = center.y + 1,
+			z = center.z + math.sin(angle) * dist,
+		})
+	end
+end
+
+-- Collect the state of every sheep within `report_radius` of `center`.
+local function collect_sheep(center)
+	local sheep = {}
+	for _, obj in ipairs(minetest.get_objects_inside_radius(center, report_radius)) do
+		local le = obj:get_luaentity()
+		if le and le.name == SHEEP_NAME then
+			local p = obj:get_pos()
+			local v = obj:get_velocity()
+			local dx, dy, dz = p.x - center.x, p.y - center.y, p.z - center.z
+			sheep[#sheep + 1] = {
+				id = le._flock_id,
+				name = le.name,
+				hp = le.health or obj:get_hp(),
+				pos = {x = p.x, y = p.y, z = p.z},
+				vel = {x = v.x, y = v.y, z = v.z},
+				yaw = obj:get_yaw(),
+				dist = math.sqrt(dx * dx + dy * dy + dz * dz),
+			}
+		end
+	end
+	return sheep
+end
+
+-- Write the current flock state to the observation file.
+local function write_obs(player)
+	local pos = player:get_pos()
+	local data = {
+		step = step_count,
+		time_of_day = minetest.get_timeofday(),
+		player = {
+			pos = {x = pos.x, y = pos.y, z = pos.z},
+			yaw = player:get_look_horizontal(),
+			pitch = player:get_look_vertical(),
+		},
+		sheep = collect_sheep(pos),
+	}
+	data.num_sheep = #data.sheep
+	-- write_json + safe_file_write are both provided by Luanti's Lua API.
+	minetest.safe_file_write(obs_path, minetest.write_json(data))
+end
+
+minetest.register_on_joinplayer(function(player, _last_login)
+	minetest.set_timeofday(0.5)
+
+	-- Spawn near a known, terrain-loaded spot (same as the VoxeLibre template).
+	player:set_pos({x = 120, z = 92, y = 16.5})
+
+	minetest.after(2, function()
+		if player and player:is_player() then
+			spawn_flock(player:get_pos(), num_sheep, spawn_radius)
+		end
+	end)
+
+	-- Keep the observation view clean.
+	player:hud_set_flags({
+		crosshair = false,
+		basic_debug = false,
+		chat = false,
+	})
+end)
+
+minetest.register_globalstep(function(_dtime)
+	minetest.set_timeofday(0.5)
+
+	local player = minetest.get_connected_players()[1]
+	if player == nil then
+		return nil
+	end
+
+	step_count = step_count + 1
+
+	-- Voxel observations (optional, same pattern as the other envs).
+	if minetest.settings:get("voxel_obs") then
+		local player_pos = player:get_pos()
+		local voxel_data, voxel_light_data, voxel_param2_data =
+			voxel_api:get_voxel_data(player_pos, voxel_radius)
+		set_voxel_data(voxel_data)
+		set_voxel_light_data(voxel_light_data)
+		set_voxel_param2_data(voxel_param2_data)
+	end
+
+	-- Dump the flock state for the Python side to read.
+	write_obs(player)
+end)
+
+minetest.register_on_dieplayer(function(_player, _reason)
+	set_termination()
+end)

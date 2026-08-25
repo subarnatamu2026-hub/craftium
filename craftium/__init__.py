@@ -263,6 +263,39 @@ register(
 )
 
 register(
+    id="Craftium/SheepInfoVL-v0",
+    entry_point="craftium.craftium_env:CraftiumEnv",
+    additional_wrappers=[
+        WrapperSpec(
+            name="DiscreteActionWrapper",
+            entry_point="craftium.wrappers:DiscreteActionWrapper",
+            kwargs=dict(
+                actions=["forward", "left", "right", "jump", "mouse x+", "mouse x-",
+                         "mouse y+", "mouse y-"],
+                mouse_mov=0.5,
+            ),
+        )
+    ],
+    # kwargs
+    kwargs=dict(
+        env_dir=os.path.join(root_path, "craftium-envs/sheep-info-vl"),
+        obs_width=64,
+        obs_height=64,
+        max_timesteps=1000,
+        init_frames=200,
+        game_id="VoxeLibre",
+        _minetest_conf=dict(
+            # Flock size / scatter, and the radius within which sheep are
+            # reported each step to sheep_obs.json (read by sheep_info_demo.py).
+            num_sheep=50,
+            sheep_spawn_radius=10,
+            sheep_report_radius=40,
+        ),
+        _voxel_obs_available=True,
+    )
+)
+
+register(
     id="Craftium/OpenWorld-v0",
     entry_point="craftium.craftium_env:CraftiumEnv",
     additional_wrappers=[
