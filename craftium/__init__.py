@@ -233,6 +233,36 @@ register(
 )
 
 register(
+    id="Craftium/SheepNearby-v0",
+    entry_point="craftium.craftium_env:CraftiumEnv",
+    additional_wrappers=[
+        WrapperSpec(
+            name="DiscreteActionWrapper",
+            entry_point="craftium.wrappers:DiscreteActionWrapper",
+            kwargs=dict(
+                actions=["forward", "left", "right", "jump", "mouse x+", "mouse x-",
+                         "mouse y+", "mouse y-"],
+                mouse_mov=0.5,
+            ),
+        )
+    ],
+    # kwargs
+    kwargs=dict(
+        env_dir=os.path.join(root_path, "craftium-envs/sheep-nearby"),
+        obs_width=64,
+        obs_height=64,
+        max_timesteps=1000,
+        init_frames=200,
+        _minetest_conf=dict(
+            # Size of the flock spawned around the agent and how far it scatters.
+            num_sheep=50,
+            sheep_spawn_radius=10,
+        ),
+        _voxel_obs_available=True,
+    )
+)
+
+register(
     id="Craftium/OpenWorld-v0",
     entry_point="craftium.craftium_env:CraftiumEnv",
     additional_wrappers=[

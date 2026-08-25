@@ -13,3 +13,6 @@
 [submodule "craftium-envs/common_games/VoxeLibre"]
 	path = craftium-envs/common_games/VoxeLibre
 	url = https://git.minetest.land/VoxeLibre/VoxeLibre.git
+[submodule "craftium-envs/common_mods/mobs_animal"]
+	path = craftium-envs/common_mods/mobs_animal
+	url = https://github.com/minetest-mirrors/mobs_animal
