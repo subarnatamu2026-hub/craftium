@@ -60,6 +60,18 @@ local function spawn_flock(center, n, radius)
 	end
 end
 
+-- Safely read an ObjectRef's position (following/attack targets may be stale).
+local function obj_pos(o)
+	if o == nil then
+		return nil
+	end
+	local ok, p = pcall(function() return o:get_pos() end)
+	if ok and p then
+		return {x = p.x, y = p.y, z = p.z}
+	end
+	return nil
+end
+
 -- Collect the state of every sheep within `report_radius` of `center`.
 local function collect_sheep(center)
 	local sheep = {}
@@ -69,6 +81,8 @@ local function collect_sheep(center)
 			local p = obj:get_pos()
 			local v = obj:get_velocity()
 			local dx, dy, dz = p.x - center.x, p.y - center.y, p.z - center.z
+			local follow_pos = obj_pos(le.following)
+			local attack_pos = obj_pos(le.attack)
 			sheep[#sheep + 1] = {
 				id = le._flock_id,
 				name = le.name,
@@ -77,6 +91,17 @@ local function collect_sheep(center)
 				vel = {x = v.x, y = v.y, z = v.z},
 				yaw = obj:get_yaw(),
 				dist = math.sqrt(dx * dx + dy * dy + dz * dz),
+				-- Intent: WHY the sheep is moving, read from its AI luaentity.
+				intent = {
+					state = le.state,               -- "stand"/"walk"/"runaway"/"eat"/"gowp"
+					eating = le.state == "eat",     -- frozen, eating grass
+					fleeing = le.state == "runaway",-- running away (e.g. wolf / punch)
+					following = follow_pos ~= nil,  -- chasing wheat/shepherd-staff holder
+					follow_target = follow_pos,     -- {x,y,z} it's heading toward, or nil
+					attacking = attack_pos ~= nil,
+					attack_target = attack_pos,     -- {x,y,z}, or nil
+					sheared = le.gotten == true,    -- true = no wool right now
+				},
 			}
 		end
 	end

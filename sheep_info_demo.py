@@ -76,13 +76,21 @@ def main():
 
             if t % 25 == 0:
                 sheep = flock["sheep"]
-                print(f"[step {t}] {flock['num_sheep']} sheep in range")
+                # Tally how many sheep are in each AI state this step.
+                states = {}
+                for s in sheep:
+                    st = s.get("intent", {}).get("state", "?")
+                    states[st] = states.get(st, 0) + 1
+                print(f"[step {t}] {flock['num_sheep']} sheep in range | states: {states}")
                 if sheep:
                     nearest = min(sheep, key=lambda s: s["dist"])
                     p = nearest["pos"]
+                    intent = nearest.get("intent", {})
                     print(f"    nearest: id={nearest['id']} hp={nearest['hp']} "
                           f"dist={nearest['dist']:.1f} "
-                          f"pos=({p['x']:.1f},{p['y']:.1f},{p['z']:.1f})")
+                          f"pos=({p['x']:.1f},{p['y']:.1f},{p['z']:.1f}) "
+                          f"state={intent.get('state')} "
+                          f"following={intent.get('following')} fleeing={intent.get('fleeing')}")
 
         if terminated or truncated:
             observation, info = env.reset()
