@@ -42,12 +42,19 @@ def read_flock(path):
         return None
 
 
-def run_still_episode(seed, steps, num_sheep, env_id):
-    """Run one all-still episode; return frames[t] = {id: (x, z)}."""
+def run_still_episode(seed, steps, num_sheep, env_id, pin=False, fixed_dtime=0.05):
+    """Run one all-still episode; return frames[t] = {id: (x, z)}.
+
+    If pin=True, run with sync_mode (one server step per action) and a fixed
+    simulation dtime (craftium_fixed_dtime), so the run is deterministic.
+    """
+    conf = dict(num_sheep=num_sheep, sheep_spawn_radius=10, sheep_report_radius=200)
+    if pin:
+        conf["craftium_fixed_dtime"] = fixed_dtime  # constant timestep -> reproducible
     env = gym.make(
         env_id, obs_width=64, obs_height=64, seed=seed, offscreen_sdl=False,
-        minetest_conf=dict(num_sheep=num_sheep, sheep_spawn_radius=10,
-                           sheep_report_radius=200),
+        sync_mode=pin,                 # lockstep client/server when pinning
+        minetest_conf=conf,
     )
     env.reset(seed=seed)
     path = obs_path_of(env)
@@ -69,12 +76,20 @@ def main():
     ap.add_argument("--num-sheep", type=int, default=50)
     ap.add_argument("--out", type=str, default="flock_reproducibility.gif")
     ap.add_argument("--fps", type=int, default=15)
+    ap.add_argument("--pin", action="store_true",
+                    help="pin the timestep: sync_mode + fixed craftium_fixed_dtime "
+                         "(makes the runs deterministic)")
+    ap.add_argument("--fixed-dtime", type=float, default=0.05,
+                    help="constant simulation dtime in seconds when --pin is set")
     args = ap.parse_args()
 
-    print("== Run 1: agent STILL ==")
-    frames1 = run_still_episode(args.seed, args.steps, args.num_sheep, args.env_id)
-    print("== Run 2: agent STILL (identical seed) ==")
-    frames2 = run_still_episode(args.seed, args.steps, args.num_sheep, args.env_id)
+    mode = "PINNED (sync + fixed dtime)" if args.pin else "default (wall-clock dtime)"
+    print(f"== Run 1: agent STILL  [{mode}] ==")
+    frames1 = run_still_episode(args.seed, args.steps, args.num_sheep, args.env_id,
+                                pin=args.pin, fixed_dtime=args.fixed_dtime)
+    print(f"== Run 2: agent STILL (identical seed)  [{mode}] ==")
+    frames2 = run_still_episode(args.seed, args.steps, args.num_sheep, args.env_id,
+                                pin=args.pin, fixed_dtime=args.fixed_dtime)
 
     n = min(len(frames1), len(frames2))
     if n == 0:
@@ -122,8 +137,8 @@ def main():
         ax.scatter(0, 0, marker="*", s=280, c="black", zorder=5)  # agent (both still)
         ax.set_xlim(*xlim); ax.set_ylim(*zlim); ax.set_aspect("equal")
         ax.set_xlabel("x (nodes)"); ax.set_ylabel("z (nodes)")
-        ax.set_title(f"Same scenario twice (player still) — step {i+1}/{n}   "
-                     f"mean gap = {mean_gap(i):.2f} nodes")
+        ax.set_title(f"Same scenario x2, player still — {mode}\n"
+                     f"step {i+1}/{n}   mean gap = {mean_gap(i):.3f} nodes")
         ax.legend(loc="upper right", fontsize=9)
 
     anim = FuncAnimation(fig, draw, frames=n, interval=1000 / args.fps)

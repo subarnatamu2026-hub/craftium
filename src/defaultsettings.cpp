@@ -263,6 +263,10 @@ void set_default_settings()
 	settings->setDefault("tooltip_append_itemname", "false");
 	settings->setDefault("fps_max", "60");
 	settings->setDefault("fps_max_unfocused", "10");
+	// Craftium: fixed simulation timestep (seconds). 0 = use real wall-clock
+	// dtime (default). A positive value makes the server advance by a constant
+	// dtime each step, so runs become reproducible given the same seed.
+	settings->setDefault("craftium_fixed_dtime", "0.0");
 	settings->setDefault("viewing_range", "190");
 	settings->setDefault("client_mesh_chunk", "1");
 	settings->setDefault("screen_w", "1024");

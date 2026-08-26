@@ -143,7 +143,15 @@ void *ServerThread::run()
 			if (dtime > step_settings.steplen + 0.001f)
 				m_server->yieldToOtherThreads(dtime);
 
-			m_server->AsyncRunStep(step_settings.pause ? 0.0f : dtime);
+			// Craftium: optionally advance the simulation by a FIXED dtime
+			// instead of the measured wall-clock time, so runs are
+			// reproducible (deterministic given the seed). 0 = disabled.
+			float sim_dtime = dtime;
+			const float fixed_dtime = g_settings->getFloat("craftium_fixed_dtime");
+			if (fixed_dtime > 0.0f)
+				sim_dtime = fixed_dtime;
+
+			m_server->AsyncRunStep(step_settings.pause ? 0.0f : sim_dtime);
 
 			const float remaining_time = step_settings.steplen
 					- 1e-6f * (porting::getTimeUs() - t0);
