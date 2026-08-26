@@ -42,6 +42,9 @@ def read_sheep(obs_path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--env-id", type=str, default="Craftium/SheepInfoVL-v0",
+                        help="env to run; use Craftium/SheepInfoMG-v0 for the "
+                             "Minetest Game variant (works where VoxeLibre's client can't render)")
     parser.add_argument("--num-sheep", type=int, default=50)
     parser.add_argument("--spawn-radius", type=int, default=10)
     parser.add_argument("--report-radius", type=int, default=40)
@@ -50,7 +53,7 @@ def main():
     args = parser.parse_args()
 
     env = gym.make(
-        "Craftium/SheepInfoVL-v0",
+        args.env_id,
         obs_width=256,
         obs_height=256,
         seed=args.seed,

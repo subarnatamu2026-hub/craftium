@@ -263,6 +263,38 @@ register(
 )
 
 register(
+    id="Craftium/SheepInfoMG-v0",
+    entry_point="craftium.craftium_env:CraftiumEnv",
+    additional_wrappers=[
+        WrapperSpec(
+            name="DiscreteActionWrapper",
+            entry_point="craftium.wrappers:DiscreteActionWrapper",
+            kwargs=dict(
+                actions=["forward", "left", "right", "jump", "mouse x+", "mouse x-",
+                         "mouse y+", "mouse y-"],
+                mouse_mov=0.5,
+            ),
+        )
+    ],
+    # kwargs
+    kwargs=dict(
+        # Minetest Game variant of SheepInfoVL: same per-step sheep JSON (incl.
+        # intent), but renders under software GL / WSL where VoxeLibre does not.
+        env_dir=os.path.join(root_path, "craftium-envs/sheep-info-mg"),
+        obs_width=64,
+        obs_height=64,
+        max_timesteps=1000,
+        init_frames=200,
+        _minetest_conf=dict(
+            num_sheep=50,
+            sheep_spawn_radius=10,
+            sheep_report_radius=40,
+        ),
+        _voxel_obs_available=True,
+    )
+)
+
+register(
     id="Craftium/SheepInfoVL-v0",
     entry_point="craftium.craftium_env:CraftiumEnv",
     additional_wrappers=[
