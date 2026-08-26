@@ -89,7 +89,7 @@ def run_episode(action_after_settle, seed, settle, record_steps, num_sheep, spaw
         p = flock.get("player", {}).get("pos")
         if p is not None:
             player_traj[rec] = (p["x"], p["y"], p["z"])
-        for s in flock["sheep"]:
+        for s in (flock.get("sheep") or []):
             pos = s["pos"]
             traj.setdefault(s["id"], {})[rec] = (pos["x"], pos["y"], pos["z"])
 
