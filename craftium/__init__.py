@@ -253,11 +253,23 @@ register(
         obs_height=64,
         max_timesteps=1000,
         init_frames=200,
-        _minetest_conf=dict(
+        _minetest_conf={
             # Size of the flock spawned around the agent and how far it scatters.
-            num_sheep=50,
-            sheep_spawn_radius=10,
-        ),
+            "num_sheep": 50,
+            "sheep_spawn_radius": 10,
+            # Bundled Mobs Redo is older than mobs_animal expects; chicken/bee
+            # crash on `mobs.node_sound_defaults`. We only need sheep, so disable
+            # the other animals to skip the broken files.
+            "mobs_animal.chicken": False,
+            "mobs_animal.cow": False,
+            "mobs_animal.rat": False,
+            "mobs_animal.warthog": False,
+            "mobs_animal.bee": False,
+            "mobs_animal.bunny": False,
+            "mobs_animal.kitten": False,
+            "mobs_animal.penguin": False,
+            "mobs_animal.panda": False,
+        },
         _voxel_obs_available=True,
     )
 )
@@ -285,11 +297,23 @@ register(
         obs_height=64,
         max_timesteps=1000,
         init_frames=200,
-        _minetest_conf=dict(
-            num_sheep=50,
-            sheep_spawn_radius=10,
-            sheep_report_radius=40,
-        ),
+        _minetest_conf={
+            "num_sheep": 50,
+            "sheep_spawn_radius": 10,
+            "sheep_report_radius": 40,
+            # This Craftium bundles an older Mobs Redo than mobs_animal expects,
+            # so chicken.lua/bee.lua crash on `mobs.node_sound_defaults`. We only
+            # need sheep, so disable every other animal (skips the broken files).
+            "mobs_animal.chicken": False,
+            "mobs_animal.cow": False,
+            "mobs_animal.rat": False,
+            "mobs_animal.warthog": False,
+            "mobs_animal.bee": False,
+            "mobs_animal.bunny": False,
+            "mobs_animal.kitten": False,
+            "mobs_animal.penguin": False,
+            "mobs_animal.panda": False,
+        },
         _voxel_obs_available=True,
     )
 )
