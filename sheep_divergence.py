@@ -60,6 +60,8 @@ def run_episode(action_after_settle, seed, settle, record_steps, num_sheep, spaw
         obs_width=64,
         obs_height=64,
         seed=seed,
+        # Normal x11 SDL driver (works under Xvfb and real displays alike).
+        offscreen_sdl=False,
         minetest_conf=dict(
             num_sheep=num_sheep,
             sheep_spawn_radius=spawn_radius,

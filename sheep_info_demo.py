@@ -54,6 +54,10 @@ def main():
         obs_width=256,
         obs_height=256,
         seed=args.seed,
+        # Use the normal x11 SDL driver rather than "offscreen". This works both
+        # with a real display (WSLg / an X server) and under Xvfb, and avoids the
+        # "offscreen not available" failure on SDL builds without that driver.
+        offscreen_sdl=False,
         minetest_conf=dict(
             num_sheep=args.num_sheep,
             sheep_spawn_radius=args.spawn_radius,
