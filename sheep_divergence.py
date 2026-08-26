@@ -49,14 +49,15 @@ def read_flock(path):
         return None
 
 
-def run_episode(action_after_settle, seed, settle, record_steps, num_sheep, spawn_radius):
+def run_episode(action_after_settle, seed, settle, record_steps, num_sheep, spawn_radius,
+                env_id="Craftium/SheepInfoVL-v0"):
     """Run one episode; return (traj, player_traj).
 
     traj: {sheep_id: {rec_step: (x, y, z)}} for rec_step in 0..record_steps-1
     player_traj: {rec_step: (x, y, z)}
     """
     env = gym.make(
-        "Craftium/SheepInfoVL-v0",
+        env_id,
         obs_width=64,
         obs_height=64,
         seed=seed,
@@ -103,6 +104,8 @@ def dist(a, b):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--env-id", type=str, default="Craftium/SheepInfoVL-v0",
+                    help="env to run; use Craftium/SheepInfoMG-v0 (works on WSL software GL)")
     ap.add_argument("--num-sheep", type=int, default=50)
     ap.add_argument("--spawn-radius", type=int, default=10)
     ap.add_argument("--settle", type=int, default=60,
@@ -116,10 +119,10 @@ def main():
 
     print("== Run A: player STILL ==")
     trajA, _ = run_episode(STILL, args.seed, args.settle, args.record_steps,
-                           args.num_sheep, args.spawn_radius)
+                           args.num_sheep, args.spawn_radius, env_id=args.env_id)
     print("== Run B: player FORWARD ==")
     trajB, playerB = run_episode(FORWARD, args.seed, args.settle, args.record_steps,
-                                 args.num_sheep, args.spawn_radius)
+                                 args.num_sheep, args.spawn_radius, env_id=args.env_id)
 
     os.makedirs(args.out_dir, exist_ok=True)
     ids = sorted(set(trajA) & set(trajB))
