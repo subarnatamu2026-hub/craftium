@@ -29,14 +29,26 @@ local obs_path = minetest.get_worldpath() .. DIR_DELIM .. "sheep_obs.json"
 local step_count = 0
 local next_id = 0
 
+-- Deterministic-grid spawn makes the flock start in the EXACT same layout on
+-- every run (positions and colours computed from the index, not math.random),
+-- so two runs are provably identical at step 0. Toggle with the setting
+-- `sheep_grid_spawn`.
+local grid_spawn = minetest.settings:get_bool("sheep_grid_spawn")
+
 local function random_sheep_name()
 	return "mobs_animal:sheep_" .. SHEEP_COLORS[math.random(#SHEEP_COLORS)]
 end
 
+-- Deterministic colour for grid spawn (no RNG).
+local function sheep_name_for(i)
+	return "mobs_animal:sheep_" .. SHEEP_COLORS[(i % #SHEEP_COLORS) + 1]
+end
+
 -- Spawn one sheep at pos and tag it with a stable id for cross-step tracking.
-local function spawn_one(pos)
+-- `name` is optional; when omitted a random colour is used.
+local function spawn_one(pos, name)
 	local obj = mobs:add_mob(pos, {
-		name = random_sheep_name(),
+		name = name or random_sheep_name(),
 		ignore_count = true,
 	})
 	if obj ~= nil and obj ~= false then
@@ -49,7 +61,8 @@ local function spawn_one(pos)
 	return obj
 end
 
-local function spawn_flock(center, n, radius)
+-- Random scatter in a disk (default).
+local function spawn_flock_random(center, n, radius)
 	for _ = 1, n do
 		local angle = math.random() * 2 * math.pi
 		local dist = math.sqrt(math.random()) * radius
@@ -58,6 +71,30 @@ local function spawn_flock(center, n, radius)
 			y = center.y + 1,
 			z = center.z + math.sin(angle) * dist,
 		})
+	end
+end
+
+-- Deterministic square grid centred on `center` (identical on every run).
+local function spawn_flock_grid(center, n, spacing)
+	spacing = spacing or 1.5
+	local cols = math.ceil(math.sqrt(n))
+	local half = (cols - 1) * spacing / 2
+	for i = 0, n - 1 do
+		local c = i % cols
+		local r = math.floor(i / cols)
+		spawn_one({
+			x = center.x - half + c * spacing,
+			y = center.y + 1,
+			z = center.z - half + r * spacing,
+		}, sheep_name_for(i))
+	end
+end
+
+local function spawn_flock(center, n, radius)
+	if grid_spawn then
+		spawn_flock_grid(center, n)
+	else
+		spawn_flock_random(center, n, radius)
 	end
 end
 
