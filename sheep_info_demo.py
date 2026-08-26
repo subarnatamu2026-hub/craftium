@@ -50,6 +50,10 @@ def main():
     parser.add_argument("--report-radius", type=int, default=40)
     parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--record", action="store_true",
+                        help="save the agent's RGB view each step and write flock.gif at the end")
+    parser.add_argument("--out-dir", type=str, default="sheep_view",
+                        help="where to write the recorded frames / flock.gif")
     args = parser.parse_args()
 
     env = gym.make(
@@ -72,9 +76,13 @@ def main():
     obs_path = find_obs_path(env)
     print(f"Reading flock state from: {obs_path}")
 
+    frames = [observation] if args.record else None
+
     for t in range(1, args.steps + 1):
         action = 4 if t % 2 == 0 else 0  # pan the camera (mouse x+) now and then
         observation, reward, terminated, truncated, info = env.step(action)
+        if frames is not None:
+            frames.append(observation)
 
         flock = read_sheep(obs_path)
         if flock is not None:
@@ -104,6 +112,22 @@ def main():
             obs_path = find_obs_path(env)  # run_dir may change across hard resets
 
     env.close()
+
+    # Stitch the recorded agent's-eye frames into a GIF (and a couple of PNGs).
+    if frames:
+        try:
+            from PIL import Image
+        except ImportError:
+            print("Install Pillow to save the recording: pip install pillow")
+        else:
+            os.makedirs(args.out_dir, exist_ok=True)
+            imgs = [Image.fromarray(f) for f in frames]
+            gif_path = os.path.join(args.out_dir, "flock.gif")
+            imgs[0].save(gif_path, save_all=True, append_images=imgs[1:],
+                         duration=50, loop=0)  # ~20 fps
+            imgs[0].save(os.path.join(args.out_dir, "first_frame.png"))
+            imgs[-1].save(os.path.join(args.out_dir, "last_frame.png"))
+            print(f"Saved {len(imgs)}-frame recording -> {gif_path}")
 
 
 if __name__ == "__main__":
