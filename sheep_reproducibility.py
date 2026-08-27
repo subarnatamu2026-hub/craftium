@@ -116,6 +116,38 @@ def main():
         print("No data captured — nothing to animate.")
         return
 
+    # Diagnostic: flag any per-step position jump larger than a sheep could walk
+    # (walk speed ~1 node/step), which usually means a tracking artifact, not a
+    # real move — e.g. the sheep left/re-entered the report area, or an id got
+    # reused. Prints the id, the step range, and the distance.
+    def detect_teleports(frames, label, thresh=2.0, top=8):
+        ids = set()
+        for fr in frames:
+            ids |= set(fr.keys())
+        jumps = []
+        for k in ids:
+            prev, prev_i = None, None
+            for i, fr in enumerate(frames):
+                if k in fr:
+                    if prev is not None:
+                        d = math.dist(prev, fr[k])
+                        if d > thresh:
+                            jumps.append((d, k, prev_i, i, i - prev_i))
+                    prev, prev_i = fr[k], i
+        jumps.sort(reverse=True)
+        if jumps:
+            print(f"[{label}] {len(jumps)} jump(s) > {thresh} nodes between consecutive "
+                  f"recorded frames. Largest:")
+            for d, k, i0, i1, gap in jumps[:top]:
+                note = f"(recorded {gap} steps apart)" if gap > 1 else "(consecutive)"
+                print(f"    id={k}: {d:.1f} nodes, step {i0}->{i1} {note}")
+        else:
+            print(f"[{label}] no jumps > {thresh} nodes/step — motion is smooth.")
+        return jumps
+
+    detect_teleports(frames1, "run1")
+    detect_teleports(frames2, "run2")
+
     xs, zs = [], []
     for frames in (frames1, frames2):
         for fr in frames:
