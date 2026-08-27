@@ -43,7 +43,7 @@ def read_flock(path):
 
 
 def run_still_episode(seed, steps, num_sheep, env_id, pin=False, fixed_dtime=0.05,
-                      grid=False):
+                      grid=False, freeze_steps=0):
     """Run one all-still episode; return frames[t] = {id: (x, z)}.
 
     If pin=True, run with sync_mode (one server step per action) and a fixed
@@ -54,6 +54,8 @@ def run_still_episode(seed, steps, num_sheep, env_id, pin=False, fixed_dtime=0.0
     conf = dict(num_sheep=num_sheep, sheep_spawn_radius=10, sheep_report_radius=200)
     if grid:
         conf["sheep_grid_spawn"] = True             # identical start on every run
+    if freeze_steps > 0:
+        conf["sheep_freeze_steps"] = freeze_steps   # hold flock static for N steps
     if pin:
         conf["craftium_fixed_dtime"] = fixed_dtime  # constant timestep -> reproducible
     env = gym.make(
@@ -89,18 +91,25 @@ def main():
     ap.add_argument("--grid", action="store_true",
                     help="spawn the flock on a deterministic grid so both runs "
                          "start in the identical layout (same positions at step 0)")
+    ap.add_argument("--freeze", type=int, default=0,
+                    help="hold every sheep pinned in place for N steps after spawn, "
+                         "then release (establishes an identical static start)")
     args = ap.parse_args()
 
     bits = []
     bits.append("grid start" if args.grid else "random start")
+    if args.freeze > 0:
+        bits.append(f"freeze {args.freeze}")
     bits.append("PINNED dtime" if args.pin else "wall-clock dtime")
     mode = " · ".join(bits)
     print(f"== Run 1: agent STILL  [{mode}] ==")
     frames1 = run_still_episode(args.seed, args.steps, args.num_sheep, args.env_id,
-                                pin=args.pin, fixed_dtime=args.fixed_dtime, grid=args.grid)
+                                pin=args.pin, fixed_dtime=args.fixed_dtime, grid=args.grid,
+                                freeze_steps=args.freeze)
     print(f"== Run 2: agent STILL (identical seed)  [{mode}] ==")
     frames2 = run_still_episode(args.seed, args.steps, args.num_sheep, args.env_id,
-                                pin=args.pin, fixed_dtime=args.fixed_dtime, grid=args.grid)
+                                pin=args.pin, fixed_dtime=args.fixed_dtime, grid=args.grid,
+                                freeze_steps=args.freeze)
 
     n = min(len(frames1), len(frames2))
     if n == 0:

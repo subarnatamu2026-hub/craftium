@@ -19,6 +19,10 @@ end
 local num_sheep     = tonumber(minetest.settings:get("num_sheep")) or 50
 local spawn_radius  = tonumber(minetest.settings:get("sheep_spawn_radius")) or 10
 local report_radius = tonumber(minetest.settings:get("sheep_report_radius")) or 40
+-- Hold every sheep pinned in place for this many steps after spawn, then let
+-- them move. Lets you establish an identical, static start before the dynamics
+-- take over. 0 = no freeze.
+local freeze_steps  = tonumber(minetest.settings:get("sheep_freeze_steps")) or 0
 
 -- mobs_animal registers sheep per wool colour, e.g. mobs_animal:sheep_white.
 local SHEEP_COLORS = { "white", "grey", "dark_grey", "black", "brown" }
@@ -28,6 +32,7 @@ local obs_path = minetest.get_worldpath() .. DIR_DELIM .. "sheep_obs.json"
 
 local step_count = 0
 local next_id = 0
+local frozen_until = -1   -- hold sheep in place while step_count <= this
 
 -- Deterministic-grid spawn makes the flock start in the EXACT same layout on
 -- every run (positions and colours computed from the index, not math.random),
@@ -57,6 +62,8 @@ local function spawn_one(pos, name)
 			obj._flock_id = next_id
 			next_id = next_id + 1
 		end
+		-- Remember the spawn spot so we can pin the sheep there during freeze.
+		obj._home = {x = pos.x, y = pos.y, z = pos.z}
 	end
 	return obj
 end
@@ -149,6 +156,17 @@ local function collect_sheep(center)
 	return sheep
 end
 
+-- Pin every sheep at its spawn spot (velocity 0) — used during the freeze window.
+local function hold_flock(center)
+	for _, o in ipairs(minetest.get_objects_inside_radius(center, report_radius)) do
+		local le = o:get_luaentity()
+		if is_sheep(le) and le._home then
+			o:set_pos(le._home)
+			o:set_velocity({x = 0, y = 0, z = 0})
+		end
+	end
+end
+
 local function write_obs(player)
 	local pos = player:get_pos()
 	local data = {
@@ -172,6 +190,8 @@ minetest.register_on_joinplayer(function(player, _last_login)
 	minetest.after(1, function()
 		if player and player:is_player() then
 			spawn_flock(player:get_pos(), num_sheep, spawn_radius)
+			-- Begin the freeze window (if any) now that the flock exists.
+			frozen_until = step_count + freeze_steps
 		end
 	end)
 
@@ -198,6 +218,11 @@ minetest.register_globalstep(function(_dtime)
 		set_voxel_data(voxel_data)
 		set_voxel_light_data(voxel_light_data)
 		set_voxel_param2_data(voxel_param2_data)
+	end
+
+	-- Hold the flock static during the freeze window, then let it move.
+	if freeze_steps > 0 and frozen_until >= 0 and step_count <= frozen_until then
+		hold_flock(player:get_pos())
 	end
 
 	write_obs(player)
