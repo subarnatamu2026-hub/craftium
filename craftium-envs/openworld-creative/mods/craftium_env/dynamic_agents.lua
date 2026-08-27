@@ -54,6 +54,8 @@ local frame = 0                -- server step counter (matches Python receives)
 local spawned = false          -- whether the initial population has been spawned
 local tracked = {}             -- slot index -> ObjectRef
 local log_file = nil
+local agent_meta = {}          -- slot index -> static visual metadata (mesh, textures, ...)
+local meta_dirty = false       -- whether new metadata needs to be flushed to the log
 
 local function open_log()
 	-- Truncate any stale file from a previous run of the same world dir.
@@ -158,6 +160,40 @@ local function read_agent(slot)
 		if ok_h and h then hp = h end
 	end
 
+	-- Full rotation (radians): x = pitch, y = yaw, z = roll.
+	local rot = {x = 0, y = yaw, z = 0}
+	local ok_r, r = pcall(function() return obj:get_rotation() end)
+	if ok_r and r then rot = r end
+
+	-- Static object properties: collision box + mesh/visual info.
+	local props = nil
+	local ok_p, p = pcall(function() return obj:get_properties() end)
+	if ok_p and p then props = p end
+
+	-- Collision box relative to pos, in Minetest axes {x1,y1,z1,x2,y2,z2}.
+	local cbox = {0, 0, 0, 0, 0, 0}
+	if props and props.collisionbox then cbox = props.collisionbox end
+
+	-- Mob state (mcl_mobs specific; captured defensively).
+	local sheared = (lua.gotten == true) and 1 or 0
+	local baby = (lua.child == true or lua.baby == true) and 1 or 0
+	local color = lua.color or lua.dye or ""
+
+	-- Capture static visual metadata once per slot (for later mesh drawing).
+	if agent_meta[slot] == nil and props then
+		agent_meta[slot] = {
+			slot = slot,
+			name = lua.name or AGENT_NAME,
+			mesh = props.mesh or "",
+			textures = props.textures or {},
+			visual = props.visual or "",
+			visual_size = props.visual_size or {x = 1, y = 1, z = 1},
+			collisionbox = cbox,
+			selectionbox = props.selectionbox or cbox,
+		}
+		meta_dirty = true
+	end
+
 	return {
 		slot = slot,
 		name = lua.name or AGENT_NAME,
@@ -165,8 +201,32 @@ local function read_agent(slot)
 		pos = {x = pos.x, y = pos.y, z = pos.z},
 		vel = {x = vel.x, y = vel.y, z = vel.z},
 		yaw = yaw,
+		rotation = {x = rot.x, y = rot.y, z = rot.z},
+		collisionbox = cbox,
 		hp = hp,
+		sheared = sheared,
+		baby = baby,
+		color = color,
 	}
+end
+
+-- Write a one-off "meta" record with the static visual metadata per slot.
+-- The PERSIST reader keeps the last meta record it sees.
+local function write_meta()
+	if log_file == nil then
+		return
+	end
+	local metas = {}
+	for slot = 1, NUM_AGENTS do
+		metas[slot] = agent_meta[slot] or {slot = slot, name = AGENT_NAME}
+	end
+	local record = {kind = "meta", num_agents = NUM_AGENTS, agents = metas}
+	local ok, line = pcall(minetest.write_json, record)
+	if ok and line then
+		log_file:write(line .. "\n")
+		log_file:flush()
+	end
+	meta_dirty = false
 end
 
 -- Write one JSON record for the current frame.
@@ -180,12 +240,20 @@ local function log_frame(player_pos)
 		if rec == nil then
 			rec = {slot = slot, name = AGENT_NAME, present = 0,
 			       pos = {x = 0, y = 0, z = 0}, vel = {x = 0, y = 0, z = 0},
-			       yaw = 0, hp = 0}
+			       yaw = 0, rotation = {x = 0, y = 0, z = 0},
+			       collisionbox = {0, 0, 0, 0, 0, 0}, hp = 0,
+			       sheared = 0, baby = 0, color = ""}
 		end
 		agents[slot] = rec
 	end
 
+	-- Flush metadata whenever a newly-seen agent contributed some.
+	if meta_dirty then
+		write_meta()
+	end
+
 	local record = {
+		kind = "frame",
 		frame = frame,
 		time = minetest.get_gametime(),
 		player_pos = {x = player_pos.x, y = player_pos.y, z = player_pos.z},
