@@ -21,6 +21,16 @@ end
 
 timeofday = tonumber(minetest.settings:get("world_start_time"))/24000
 
+-- Whether to hide all HUD elements and the first-person wielded hand/item from
+-- the RGB observation (purely visual; does not affect actions/observations).
+local function _setting_true(name)
+	local v = minetest.settings:get(name)
+	if v == nil then return false end
+	v = string.lower(tostring(v))
+	return v == "true" or v == "1" or v == "yes"
+end
+local CLEAN_RGB = _setting_true("clean_rgb")
+
 -- executed when the player joins the game
 minetest.register_on_joinplayer(function(player, _last_login)
 
@@ -35,6 +45,21 @@ minetest.register_on_joinplayer(function(player, _last_login)
 	end
 
 	minetest.set_timeofday(timeofday)
+
+	-- Hide VoxeLibre's mod-drawn HUD bars (health/hunger/armor/xp) when a
+	-- clean RGB observation is requested. Guarded so it is a no-op if the mods
+	-- are absent.
+	if CLEAN_RGB then
+		if minetest.global_exists("hb") and hb.hide_hudbar then
+			for _, bar in ipairs({"health", "breath", "armor", "hunger",
+			                      "exhaustion", "saturation", "absorption"}) do
+				pcall(hb.hide_hudbar, player, bar)
+			end
+		end
+		if minetest.global_exists("mcl_experience") and mcl_experience.remove_hud then
+			pcall(mcl_experience.remove_hud, player)
+		end
+	end
 
 end)
 
@@ -54,11 +79,27 @@ minetest.register_globalstep(function(dtime)
 	end
 
 	-- disable HUD elements -- normal HUD todo: check moving up in script
-	player:hud_set_flags({
-		crosshair = false,
-		basic_debug = false,
-		chat = false,
-	})
+	if CLEAN_RGB then
+		-- Also hide the hotbar and, crucially, the first-person wielded
+		-- hand/item (`wielditem`), for a clean RGB observation.
+		player:hud_set_flags({
+			crosshair = false,
+			basic_debug = false,
+			chat = false,
+			hotbar = false,
+			wielditem = false,
+			healthbar = false,
+			breathbar = false,
+			minimap = false,
+			minimap_radar = false,
+		})
+	else
+		player:hud_set_flags({
+			crosshair = false,
+			basic_debug = false,
+			chat = false,
+		})
+	end
 
 	-- if the player is connected:
 	local player_pos = player:get_pos()
