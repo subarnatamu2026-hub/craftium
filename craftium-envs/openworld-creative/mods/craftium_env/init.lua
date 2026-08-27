@@ -66,3 +66,7 @@ minetest.register_globalstep(function(dtime)
 		get_voxel_data_cpp(player_pos, voxel_radius)
 	end
 end)
+
+-- Optional dynamic-agent (mobs/animals) spawning + per-frame logging.
+-- Only active when `dynamic_agents_enable` is set; see dynamic_agents.lua.
+dofile(minetest.get_modpath("craftium_env") .. "/dynamic_agents.lua")
