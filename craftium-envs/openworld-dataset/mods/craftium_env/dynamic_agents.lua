@@ -55,6 +55,7 @@ local spawned = false          -- whether the initial population has been spawne
 local tracked = {}             -- slot index -> ObjectRef
 local log_file = nil
 local agent_meta = {}          -- slot index -> static visual metadata (mesh, textures, ...)
+local player_meta = nil        -- static visual metadata for the player body
 local meta_dirty = false       -- whether new metadata needs to be flushed to the log
 
 local function open_log()
@@ -210,6 +211,45 @@ local function read_agent(slot)
 	}
 end
 
+-- Read the player body state, capturing its static visual metadata once.
+local function read_player(player)
+	local pos = player:get_pos()
+
+	local yaw = 0
+	local ok_y, y = pcall(function() return player:get_look_horizontal() end)
+	if ok_y and y then yaw = y end
+	local pitch = 0
+	local ok_p, p = pcall(function() return player:get_look_vertical() end)
+	if ok_p and p then pitch = p end
+
+	local props = nil
+	local ok_pr, pr = pcall(function() return player:get_properties() end)
+	if ok_pr and pr then props = pr end
+
+	local cbox = {0, 0, 0, 0, 0, 0}
+	if props and props.collisionbox then cbox = props.collisionbox end
+
+	if player_meta == nil and props then
+		player_meta = {
+			name = "player",
+			mesh = props.mesh or "",
+			textures = props.textures or {},
+			visual = props.visual or "",
+			visual_size = props.visual_size or {x = 1, y = 1, z = 1},
+			collisionbox = cbox,
+		}
+		meta_dirty = true
+	end
+
+	return {
+		present = 1,
+		pos = {x = pos.x, y = pos.y, z = pos.z},
+		yaw = yaw,
+		rotation = {x = pitch, y = yaw, z = 0},
+		collisionbox = cbox,
+	}
+end
+
 -- Write a one-off "meta" record with the static visual metadata per slot.
 -- The PERSIST reader keeps the last meta record it sees.
 local function write_meta()
@@ -220,7 +260,8 @@ local function write_meta()
 	for slot = 1, NUM_AGENTS do
 		metas[slot] = agent_meta[slot] or {slot = slot, name = AGENT_NAME}
 	end
-	local record = {kind = "meta", num_agents = NUM_AGENTS, agents = metas}
+	local record = {kind = "meta", num_agents = NUM_AGENTS, agents = metas,
+	                player = player_meta or {name = "player"}}
 	local ok, line = pcall(minetest.write_json, record)
 	if ok and line then
 		log_file:write(line .. "\n")
@@ -230,10 +271,13 @@ local function write_meta()
 end
 
 -- Write one JSON record for the current frame.
-local function log_frame(player_pos)
+local function log_frame(player)
 	if log_file == nil then
 		return
 	end
+	local player_body = read_player(player)
+	local player_pos = player_body.pos
+
 	local agents = {}
 	for slot = 1, NUM_AGENTS do
 		local rec = read_agent(slot)
@@ -247,7 +291,7 @@ local function log_frame(player_pos)
 		agents[slot] = rec
 	end
 
-	-- Flush metadata whenever a newly-seen agent contributed some.
+	-- Flush metadata whenever a newly-seen agent (or the player) contributed some.
 	if meta_dirty then
 		write_meta()
 	end
@@ -257,6 +301,7 @@ local function log_frame(player_pos)
 		frame = frame,
 		time = minetest.get_gametime(),
 		player_pos = {x = player_pos.x, y = player_pos.y, z = player_pos.z},
+		player = player_body,
 		num_agents = NUM_AGENTS,
 		agents = agents,
 	}
@@ -300,5 +345,5 @@ minetest.register_globalstep(function(_dtime)
 	end
 
 	frame = frame + 1
-	log_frame(player_pos)
+	log_frame(player)
 end)
