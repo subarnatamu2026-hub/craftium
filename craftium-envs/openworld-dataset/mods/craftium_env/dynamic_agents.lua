@@ -129,6 +129,60 @@ local function ensure_population(player_pos)
 	return map_ready
 end
 
+-- Bone names to probe on engines without get_bone_overrides() (legacy fallback).
+local BONE_PROBE = {"head", "Head", "Head_Control", "body", "Body",
+                    "Arm_Right", "Arm_Left",
+                    "Arm_Right_Pitch_Control", "Arm_Left_Pitch_Control"}
+
+-- Which animation clip is currently playing (frame range + speed).
+local function read_animation(obj)
+	local ok, range, speed, blend = pcall(function()
+		return obj:get_animation()
+	end)
+	if ok and range then
+		return {range = {x = range.x or 0, y = range.y or 0},
+		        speed = speed or 0, blend = blend or 0}
+	end
+	return {range = {x = 0, y = 0}, speed = 0, blend = 0}
+end
+
+-- Per-frame bone overrides (articulation a mod has explicitly posed, e.g. head
+-- swivel, player arm/head pitch). Rotations are normalized to radians. Returns
+-- a map bone_name -> {rot={x,y,z}, pos={x,y,z}}. Only overridden bones appear.
+local function read_bones(obj)
+	local out = {}
+	-- Preferred: get_bone_overrides() returns all set overrides (Luanti 5.9+),
+	-- rotations already in radians.
+	local ok, all = pcall(function() return obj:get_bone_overrides() end)
+	if ok and type(all) == "table" then
+		for bone, ov in pairs(all) do
+			local rec = {}
+			if ov.rotation and ov.rotation.vec then
+				local r = ov.rotation.vec
+				rec.rot = {x = r.x, y = r.y, z = r.z}
+			end
+			if ov.position and ov.position.vec then
+				local p = ov.position.vec
+				rec.pos = {x = p.x, y = p.y, z = p.z}
+			end
+			if rec.rot or rec.pos then out[bone] = rec end
+		end
+		return out
+	end
+	-- Legacy fallback: probe known bone names (get_bone_position returns
+	-- rotation in degrees, so convert to radians).
+	for _, bone in ipairs(BONE_PROBE) do
+		local ok2, pos, rot = pcall(function() return obj:get_bone_position(bone) end)
+		if ok2 and rot then
+			out[bone] = {
+				rot = {x = math.rad(rot.x), y = math.rad(rot.y), z = math.rad(rot.z)},
+				pos = pos and {x = pos.x, y = pos.y, z = pos.z} or nil,
+			}
+		end
+	end
+	return out
+end
+
 -- Read the current state of a tracked agent, or nil if it is gone.
 local function read_agent(slot)
 	local obj = tracked[slot]
@@ -208,6 +262,8 @@ local function read_agent(slot)
 		sheared = sheared,
 		baby = baby,
 		color = color,
+		anim = read_animation(obj),
+		bones = read_bones(obj),
 	}
 end
 
@@ -247,6 +303,8 @@ local function read_player(player)
 		yaw = yaw,
 		rotation = {x = pitch, y = yaw, z = 0},
 		collisionbox = cbox,
+		anim = read_animation(player),
+		bones = read_bones(player),
 	}
 end
 
@@ -286,7 +344,8 @@ local function log_frame(player)
 			       pos = {x = 0, y = 0, z = 0}, vel = {x = 0, y = 0, z = 0},
 			       yaw = 0, rotation = {x = 0, y = 0, z = 0},
 			       collisionbox = {0, 0, 0, 0, 0, 0}, hp = 0,
-			       sheared = 0, baby = 0, color = ""}
+			       sheared = 0, baby = 0, color = "",
+			       anim = {range = {x = 0, y = 0}, speed = 0, blend = 0}, bones = {}}
 		end
 		agents[slot] = rec
 	end
