@@ -34,7 +34,11 @@ local CLEAN_RGB = _setting_true("clean_rgb")
 -- If enabled, relocate the player onto solid, dry ground at episode start so the
 -- agent does not spawn in a water body (and then jump in place).
 local SPAWN_ON_LAND = _setting_true("spawn_on_land")
+-- If enabled, keep the player on dry land for the WHOLE episode: any step onto
+-- or into water is undone by snapping back to the last solid-ground position.
+local KEEP_ON_LAND = _setting_true("keep_player_on_land")
 local player_relocated = false
+local last_ground_pos = nil
 
 local function _is_liquid(name)
 	local def = minetest.registered_nodes[name]
@@ -77,6 +81,27 @@ local function find_dry_ground(pos)
 		end
 	end
 	return nil, map_ready
+end
+
+-- True if the player is standing on/inside water (feet node or the support
+-- node just below is a liquid). Jumping over land is NOT flagged (support is air
+-- but not liquid), so normal navigation is unaffected.
+local function player_over_water(player)
+	local p = player:get_pos()
+	local at = minetest.get_node_or_nil({x = p.x, y = p.y + 0.1, z = p.z})
+	local below = minetest.get_node_or_nil({x = p.x, y = p.y - 0.5, z = p.z})
+	if at ~= nil and _is_liquid(at.name) then return true end
+	if below ~= nil and _is_liquid(below.name) then return true end
+	return false
+end
+
+-- True if the player is currently standing on solid dry ground.
+local function player_on_solid(player)
+	local p = player:get_pos()
+	local below = minetest.get_node_or_nil({x = p.x, y = p.y - 0.5, z = p.z})
+	local at = minetest.get_node_or_nil({x = p.x, y = p.y + 0.1, z = p.z})
+	return below ~= nil and _is_solid(below.name)
+	       and at ~= nil and not _is_liquid(at.name)
 end
 
 -- executed when the player joins the game
@@ -140,13 +165,34 @@ minetest.register_globalstep(function(dtime)
 					player:set_pos(dry)
 					pcall(function() player:add_velocity(vector.multiply(player:get_velocity() or {x=0,y=0,z=0}, -1)) end)
 					player_relocated = true
+					last_ground_pos = dry
 				elseif ready then
 					-- Map loaded but no dry ground within range; give up trying.
 					player_relocated = true
 				end
 			else
 				player_relocated = true  -- already on land
+				last_ground_pos = ppos
 			end
+		end
+	end
+
+	-- Keep the player on dry land for the whole episode: if a step put it on or
+	-- into water, snap it back to the last solid-ground position (looks like an
+	-- invisible wall at the water's edge). Normal walking/jumping on land is
+	-- untouched. Runs after any spawn relocation so we have a valid anchor.
+	if KEEP_ON_LAND then
+		if player_over_water(player) then
+			if last_ground_pos ~= nil then
+				player:set_pos(last_ground_pos)
+				pcall(function()
+					local v = player:get_velocity()
+					if v then player:add_velocity({x = -v.x, y = math.min(0, -v.y), z = -v.z}) end
+				end)
+			end
+		elseif player_on_solid(player) then
+			-- remember the latest safe standing spot (not mid-jump over land)
+			last_ground_pos = player:get_pos()
 		end
 	end
 
