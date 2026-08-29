@@ -60,6 +60,29 @@ local ENTITY_LIST = parse_list(minetest.settings:get("dynamic_agents_entities"))
 if #ENTITY_LIST == 0 then
 	ENTITY_LIST = {minetest.settings:get("dynamic_agents_entity") or "mobs_mc:sheep"}
 end
+
+-- Keep only entities that are actually registered in this game build. Requesting
+-- an unregistered id makes minetest.add_entity spawn an "unknown object"
+-- placeholder, so we must never try to spawn those.
+local function is_registered(name)
+	return minetest.registered_entities ~= nil
+	       and minetest.registered_entities[name] ~= nil
+end
+do
+	local valid = {}
+	for _, n in ipairs(ENTITY_LIST) do
+		if is_registered(n) then
+			table.insert(valid, n)
+		else
+			minetest.log("warning", "[dynamic_agents] entity not registered, skipping: " .. tostring(n))
+		end
+	end
+	if #valid == 0 then
+		valid = is_registered("mobs_mc:sheep") and {"mobs_mc:sheep"} or ENTITY_LIST
+		minetest.log("warning", "[dynamic_agents] no requested entities registered; using fallback")
+	end
+	ENTITY_LIST = valid
+end
 local AGENT_NAME = ENTITY_LIST[1]
 
 -- Number of agents: random in [count_min, count_max] if given, else count.
@@ -123,6 +146,7 @@ local LOG_PATH = minetest.get_worldpath() .. "/data_dynamic.jsonl"
 local frame = 0                -- server step counter (matches Python receives)
 local spawned = false          -- whether the initial population has been spawned
 local tracked = {}             -- slot index -> ObjectRef
+local slot_failed = {}         -- slots whose species can't spawn a real mob (skip forever)
 local log_file = nil
 local agent_meta = {}          -- slot index -> static visual metadata (mesh, textures, ...)
 local player_meta = nil        -- static visual metadata for the player body
@@ -163,25 +187,40 @@ local function spawn_agent(slot, player_pos)
 		y = player_pos.y,
 		z = player_pos.z + radius * math.sin(angle),
 	}
+	local name = slot_entity[slot] or AGENT_NAME
+
+	-- Never try to spawn an unregistered entity (it would create an "unknown
+	-- object" placeholder). Mark the slot failed so it is not retried.
+	if not is_registered(name) then
+		slot_failed[slot] = true
+		return false, true
+	end
+
 	local ground, map_ready = find_ground(target)
 	if ground == nil then
 		return false, map_ready
 	end
 
-	local obj = minetest.add_entity(ground, slot_entity[slot] or AGENT_NAME)
+	local obj = minetest.add_entity(ground, name)
 	if obj == nil then
+		return false, map_ready
+	end
+
+	-- A real mob has a luaentity. If not (placeholder / failed spawn), remove it
+	-- and stop retrying this slot so we never accumulate "unknown object"s.
+	local lua = obj:get_luaentity()
+	if lua == nil then
+		obj:remove()
+		slot_failed[slot] = true
 		return false, map_ready
 	end
 
 	-- Tag the entity so it survives despawn logic where the mob framework
 	-- honours these fields, and remember its slot.
-	local lua = obj:get_luaentity()
-	if lua then
-		lua.persistent = true
-		lua.despawn_immediately = false
-		lua._dyn_slot = slot
-		if NEUTRAL then neutralize(lua) end
-	end
+	lua.persistent = true
+	lua.despawn_immediately = false
+	lua._dyn_slot = slot
+	if NEUTRAL then neutralize(lua) end
 	tracked[slot] = obj
 	return true, map_ready
 end
@@ -190,11 +229,13 @@ end
 local function ensure_population(player_pos)
 	local map_ready = true
 	for slot = 1, NUM_AGENTS do
-		local obj = tracked[slot]
-		local alive = obj ~= nil and obj:get_luaentity() ~= nil
-		if not alive and (MAINTAIN or not spawned) then
-			local ok, ready = spawn_agent(slot, player_pos)
-			map_ready = map_ready and ready
+		if not slot_failed[slot] then
+			local obj = tracked[slot]
+			local alive = obj ~= nil and obj:get_luaentity() ~= nil
+			if not alive and (MAINTAIN or not spawned) then
+				local ok, ready = spawn_agent(slot, player_pos)
+				map_ready = map_ready and ready
+			end
 		end
 	end
 	return map_ready
