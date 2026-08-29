@@ -38,12 +38,48 @@ end
 -- ---------------------------------------------------------------------------
 -- Configuration (all overridable through minetest.conf / minetest_conf)
 -- ---------------------------------------------------------------------------
-local AGENT_NAME    = minetest.settings:get("dynamic_agents_entity") or "mobs_mc:sheep"
-local NUM_AGENTS    = math.floor(setting_number("dynamic_agents_count", 10))
+
+-- Seed the RNG deterministically from the level seed so the chosen count and
+-- the mix of mob types are reproducible per level.
+local _seed = tonumber(minetest.settings:get("fixed_map_seed"))
+if _seed then math.randomseed(_seed) end
+
+-- Entity type(s). `dynamic_agents_entities` is a comma-separated list to mix
+-- different animals; falls back to the single `dynamic_agents_entity`.
+local function parse_list(s)
+	local out = {}
+	if s then
+		for item in string.gmatch(s, "([^,]+)") do
+			item = item:gsub("^%s+", ""):gsub("%s+$", "")
+			if item ~= "" then table.insert(out, item) end
+		end
+	end
+	return out
+end
+local ENTITY_LIST = parse_list(minetest.settings:get("dynamic_agents_entities"))
+if #ENTITY_LIST == 0 then
+	ENTITY_LIST = {minetest.settings:get("dynamic_agents_entity") or "mobs_mc:sheep"}
+end
+local AGENT_NAME = ENTITY_LIST[1]
+
+-- Number of agents: random in [count_min, count_max] if given, else count.
+local COUNT_MIN = math.floor(setting_number("dynamic_agents_count_min",
+                    setting_number("dynamic_agents_count", 10)))
+local COUNT_MAX = math.floor(setting_number("dynamic_agents_count_max", COUNT_MIN))
+if COUNT_MAX < COUNT_MIN then COUNT_MAX = COUNT_MIN end
+local NUM_AGENTS = math.random(COUNT_MIN, COUNT_MAX)
+
 local MIN_RADIUS    = setting_number("dynamic_agents_min_radius", 4.0)
 local MAX_RADIUS    = setting_number("dynamic_agents_max_radius", 10.0)
 -- Keep the population topped up if mobs die/despawn during the episode.
 local MAINTAIN      = setting_true("dynamic_agents_maintain", true)
+
+-- Assign each slot a (random) entity type from the list, fixed for the episode
+-- so a respawned/topped-up slot keeps the same species.
+local slot_entity = {}
+for slot = 1, NUM_AGENTS do
+	slot_entity[slot] = ENTITY_LIST[math.random(1, #ENTITY_LIST)]
+end
 
 local LOG_PATH = minetest.get_worldpath() .. "/data_dynamic.jsonl"
 
@@ -98,7 +134,7 @@ local function spawn_agent(slot, player_pos)
 		return false, map_ready
 	end
 
-	local obj = minetest.add_entity(ground, AGENT_NAME)
+	local obj = minetest.add_entity(ground, slot_entity[slot] or AGENT_NAME)
 	if obj == nil then
 		return false, map_ready
 	end
@@ -316,7 +352,7 @@ local function write_meta()
 	end
 	local metas = {}
 	for slot = 1, NUM_AGENTS do
-		metas[slot] = agent_meta[slot] or {slot = slot, name = AGENT_NAME}
+		metas[slot] = agent_meta[slot] or {slot = slot, name = slot_entity[slot] or AGENT_NAME}
 	end
 	local record = {kind = "meta", num_agents = NUM_AGENTS, agents = metas,
 	                player = player_meta or {name = "player"}}
@@ -340,7 +376,7 @@ local function log_frame(player)
 	for slot = 1, NUM_AGENTS do
 		local rec = read_agent(slot)
 		if rec == nil then
-			rec = {slot = slot, name = AGENT_NAME, present = 0,
+			rec = {slot = slot, name = slot_entity[slot] or AGENT_NAME, present = 0,
 			       pos = {x = 0, y = 0, z = 0}, vel = {x = 0, y = 0, z = 0},
 			       yaw = 0, rotation = {x = 0, y = 0, z = 0},
 			       collisionbox = {0, 0, 0, 0, 0, 0}, hp = 0,

@@ -31,6 +31,54 @@ local function _setting_true(name)
 end
 local CLEAN_RGB = _setting_true("clean_rgb")
 
+-- If enabled, relocate the player onto solid, dry ground at episode start so the
+-- agent does not spawn in a water body (and then jump in place).
+local SPAWN_ON_LAND = _setting_true("spawn_on_land")
+local player_relocated = false
+
+local function _is_liquid(name)
+	local def = minetest.registered_nodes[name]
+	return def ~= nil and def.liquidtype ~= nil and def.liquidtype ~= "none"
+end
+
+local function _is_solid(name)
+	local def = minetest.registered_nodes[name]
+	return def ~= nil and def.walkable == true and not _is_liquid(name)
+end
+
+-- Find a dry ground surface near `pos`. Scans expanding rings and returns a
+-- standing position (surface + 1) whose surface node is solid and the two nodes
+-- above are air/non-liquid; returns nil if none found or the map isn't ready.
+local function find_dry_ground(pos)
+	local cx, cy, cz = math.floor(pos.x + 0.5), math.floor(pos.y + 0.5), math.floor(pos.z + 0.5)
+	local map_ready = false
+	for r = 0, 24, 2 do
+		for dx = -r, r, 2 do
+			for dz = -r, r, 2 do
+				-- only the ring at radius r
+				if math.abs(dx) == r or math.abs(dz) == r or r == 0 then
+					local x, z = cx + dx, cz + dz
+					for y = cy + 12, cy - 16, -1 do
+						local n = minetest.get_node_or_nil({x = x, y = y, z = z})
+						if n ~= nil then
+							map_ready = true
+							local above = minetest.get_node_or_nil({x = x, y = y + 1, z = z})
+							local above2 = minetest.get_node_or_nil({x = x, y = y + 2, z = z})
+							if _is_solid(n.name) and above ~= nil and above2 ~= nil
+							   and not minetest.registered_nodes[above.name].walkable
+							   and not _is_liquid(above.name)
+							   and not _is_liquid(above2.name) then
+								return {x = x, y = y + 1, z = z}, map_ready
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return nil, map_ready
+end
+
 -- executed when the player joins the game
 minetest.register_on_joinplayer(function(player, _last_login)
 
@@ -76,6 +124,30 @@ minetest.register_globalstep(function(dtime)
 	-- if the player is not connected end here
 	if player == nil then
 		return nil
+	end
+
+	-- Relocate the player onto dry ground once, before data collection, if the
+	-- spawn is on/over water. Runs as soon as the surrounding map is loaded.
+	if SPAWN_ON_LAND and not player_relocated then
+		local ppos = player:get_pos()
+		local feet = minetest.get_node_or_nil({x = ppos.x, y = ppos.y - 0.5, z = ppos.z})
+		local here = minetest.get_node_or_nil({x = ppos.x, y = ppos.y + 0.1, z = ppos.z})
+		if feet ~= nil and here ~= nil then
+			-- Map is loaded around the player; decide if relocation is needed.
+			if _is_liquid(feet.name) or _is_liquid(here.name) then
+				local dry, ready = find_dry_ground(ppos)
+				if dry ~= nil then
+					player:set_pos(dry)
+					pcall(function() player:add_velocity(vector.multiply(player:get_velocity() or {x=0,y=0,z=0}, -1)) end)
+					player_relocated = true
+				elseif ready then
+					-- Map loaded but no dry ground within range; give up trying.
+					player_relocated = true
+				end
+			else
+				player_relocated = true  -- already on land
+			end
+		end
 	end
 
 	-- disable HUD elements -- normal HUD todo: check moving up in script
