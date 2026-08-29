@@ -73,6 +73,40 @@ local MIN_RADIUS    = setting_number("dynamic_agents_min_radius", 4.0)
 local MAX_RADIUS    = setting_number("dynamic_agents_max_radius", 10.0)
 -- Keep the population topped up if mobs die/despawn during the episode.
 local MAINTAIN      = setting_true("dynamic_agents_maintain", true)
+-- Make every spawned mob behave like a passive land animal: no attacking /
+-- chasing, no self-destruct, no environmental death - just wander around.
+local NEUTRAL       = setting_true("dynamic_agents_neutral", true)
+
+-- Reconfigure a mob's luaentity so its AI never hunts/attacks and it does not
+-- die to sunlight/fire/water. Safe to over-set fields a given mob doesn't use.
+local function neutralize(lua)
+	if lua == nil then return end
+	lua.type = "animal"          -- animals wander instead of hunting
+	lua.attack = nil             -- drop any current target
+	lua.attack_type = nil        -- disable melee/shoot/explode behaviour
+	lua.attack_players = false
+	lua.attack_animals = false
+	lua.attack_npcs = false
+	lua.attacks_monsters = false
+	lua.group_attack = false
+	lua.specific_attack = nil
+	lua.damage = 0
+	lua.docile_by_day = false
+	lua.passive = true
+	lua.runaway = false          -- don't flee from the player either
+	if lua.state == "attack" then lua.state = "stand" end
+	-- survive the environment so hostile bodies keep wandering
+	lua.ignited_by_sunlight = false
+	lua.light_damage = 0
+	lua.sunlight_damage = 0
+	lua.fire_damage = 0
+	lua.water_damage = 0
+	lua.fire_resistant = true
+	-- creeper / self-destruct safety
+	lua.explosion_radius = 0
+	lua.explosion_damage_radius = 0
+	lua.explosion_strength = 0
+end
 
 -- Assign each slot a (random) entity type from the list, fixed for the episode
 -- so a respawned/topped-up slot keeps the same species.
@@ -146,6 +180,7 @@ local function spawn_agent(slot, player_pos)
 		lua.persistent = true
 		lua.despawn_immediately = false
 		lua._dyn_slot = slot
+		if NEUTRAL then neutralize(lua) end
 	end
 	tracked[slot] = obj
 	return true, map_ready
@@ -229,6 +264,9 @@ local function read_agent(slot)
 	if lua == nil then
 		return nil
 	end
+
+	-- Re-assert neutral behaviour each frame so the AI can't re-arm.
+	if NEUTRAL then neutralize(lua) end
 
 	local pos = obj:get_pos()
 	if pos == nil then
