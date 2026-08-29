@@ -95,15 +95,6 @@ local function player_over_water(player)
 	return false
 end
 
--- True if the player is currently standing on solid dry ground.
-local function player_on_solid(player)
-	local p = player:get_pos()
-	local below = minetest.get_node_or_nil({x = p.x, y = p.y - 0.5, z = p.z})
-	local at = minetest.get_node_or_nil({x = p.x, y = p.y + 0.1, z = p.z})
-	return below ~= nil and _is_solid(below.name)
-	       and at ~= nil and not _is_liquid(at.name)
-end
-
 -- executed when the player joins the game
 minetest.register_on_joinplayer(function(player, _last_login)
 
@@ -177,10 +168,12 @@ minetest.register_globalstep(function(dtime)
 		end
 	end
 
-	-- Keep the player on dry land for the whole episode: if a step put it on or
-	-- into water, snap it back to the last solid-ground position (looks like an
-	-- invisible wall at the water's edge). Normal walking/jumping on land is
-	-- untouched. Runs after any spawn relocation so we have a valid anchor.
+	-- Keep the player on dry land for the whole episode. Each step we remember
+	-- the immediately-previous non-water position; the instant a step would put
+	-- the player on/into water we restore that position and cancel velocity. The
+	-- anchor is at most one small step away, so the player is simply *held at the
+	-- water's edge* (an invisible wall) rather than teleported backwards - it
+	-- never enters the water. Normal walking/jumping on land is untouched.
 	if KEEP_ON_LAND then
 		if player_over_water(player) then
 			if last_ground_pos ~= nil then
@@ -190,8 +183,8 @@ minetest.register_globalstep(function(dtime)
 					if v then player:add_velocity({x = -v.x, y = math.min(0, -v.y), z = -v.z}) end
 				end)
 			end
-		elseif player_on_solid(player) then
-			-- remember the latest safe standing spot (not mid-jump over land)
+		else
+			-- not over water: this position is safe, keep it as the anchor
 			last_ground_pos = player:get_pos()
 		end
 	end
