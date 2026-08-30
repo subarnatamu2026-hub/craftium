@@ -116,6 +116,15 @@ local VIEW_HALF_ANGLE = setting_number("dynamic_agents_view_half_angle", 65.0)
 local VIEW_COS        = math.cos(math.rad(VIEW_HALF_ANGLE))
 local VIEW_EYE_HEIGHT = 1.5   -- approx player eye height above feet
 
+-- The base game (VoxeLibre) keeps spawning its own ambient mobs all over the
+-- terrain, which would flood the scene with far more creatures than our fixed
+-- set. We remove any mob (mobs_mc:*) that we did not spawn ourselves - ours are
+-- tagged with `_dyn_slot`. This is a hard guarantee independent of any engine
+-- "mobs_spawn" config toggle. CULL_RADIUS covers the visible area around the
+-- player.
+local CULL_WILD   = setting_true("dynamic_agents_cull_wild", true)
+local CULL_RADIUS = setting_number("dynamic_agents_cull_radius", 96.0)
+
 -- Reconfigure a mob's luaentity so its AI never hunts/attacks and it does not
 -- die to sunlight/fire/water. Safe to over-set fields a given mob doesn't use.
 local function neutralize(lua)
@@ -314,6 +323,25 @@ local function ensure_population(player, player_pos)
 		end
 	end
 	return map_ready
+end
+
+-- Remove ambient mobs the base game spawned (any mobs_mc:* without our
+-- `_dyn_slot` tag) within CULL_RADIUS of the player, so only our fixed set is
+-- ever present. Items, projectiles, the player, etc. are left untouched.
+local function cull_wild_mobs(player_pos)
+	if not CULL_WILD then
+		return
+	end
+	local objs = minetest.get_objects_inside_radius(player_pos, CULL_RADIUS)
+	for _, o in ipairs(objs) do
+		local lua = o:get_luaentity()
+		if lua ~= nil and lua._dyn_slot == nil then
+			local n = lua.name or ""
+			if n:sub(1, 8) == "mobs_mc:" then
+				o:remove()
+			end
+		end
+	end
 end
 
 -- Soft leash: mobs wander freely; only a mob that has strayed beyond
@@ -618,6 +646,9 @@ minetest.register_globalstep(function(_dtime)
 	elseif MAINTAIN then
 		ensure_population(player, player_pos)
 	end
+
+	-- Purge any ambient mobs the base game spawned, so only our fixed set exists.
+	cull_wild_mobs(player_pos)
 
 	-- Keep the herd loosely near the player so it stays observable within the
 	-- episode (relocation happens only off-screen; see leash_agents).
