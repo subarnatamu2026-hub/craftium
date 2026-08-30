@@ -96,6 +96,10 @@ local MIN_RADIUS    = setting_number("dynamic_agents_min_radius", 4.0)
 local MAX_RADIUS    = setting_number("dynamic_agents_max_radius", 10.0)
 -- Keep the population topped up if mobs die/despawn during the episode.
 local MAINTAIN      = setting_true("dynamic_agents_maintain", true)
+-- Keep mobs near the player (so they stay observable within the episode): any
+-- mob that strays beyond this horizontal distance is relocated back near the
+-- player. 0 disables.
+local LEASH_RADIUS  = setting_number("dynamic_agents_leash_radius", 12.0)
 -- Make every spawned mob behave like a passive land animal: no attacking /
 -- chasing, no self-destruct, no environmental death - just wander around.
 local NEUTRAL       = setting_true("dynamic_agents_neutral", true)
@@ -239,6 +243,36 @@ local function ensure_population(player_pos)
 		end
 	end
 	return map_ready
+end
+
+-- Keep the herd near the player so it stays observable: any live mob that has
+-- strayed beyond LEASH_RADIUS (horizontal) is relocated to a fresh ground spot
+-- within the normal spawn ring around the player.
+local function leash_agents(player_pos)
+	if LEASH_RADIUS <= 0 then
+		return
+	end
+	for slot = 1, NUM_AGENTS do
+		local obj = tracked[slot]
+		if obj ~= nil and obj:get_luaentity() ~= nil then
+			local p = obj:get_pos()
+			if p ~= nil then
+				local dx, dz = p.x - player_pos.x, p.z - player_pos.z
+				if (dx * dx + dz * dz) > (LEASH_RADIUS * LEASH_RADIUS) then
+					local angle = math.random() * 2 * math.pi
+					local r = MIN_RADIUS + math.random() * (MAX_RADIUS - MIN_RADIUS)
+					local ground = find_ground({
+						x = player_pos.x + r * math.cos(angle),
+						y = player_pos.y,
+						z = player_pos.z + r * math.sin(angle),
+					})
+					if ground ~= nil then
+						obj:set_pos(ground)
+					end
+				end
+			end
+		end
+	end
 end
 
 -- Bone names to probe on engines without get_bone_overrides() (legacy fallback).
@@ -516,6 +550,11 @@ minetest.register_globalstep(function(_dtime)
 		end
 	elseif MAINTAIN then
 		ensure_population(player_pos)
+	end
+
+	-- Keep the herd near the player so it stays observable within the episode.
+	if spawned then
+		leash_agents(player_pos)
 	end
 
 	frame = frame + 1

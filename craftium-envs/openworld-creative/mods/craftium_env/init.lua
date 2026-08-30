@@ -177,12 +177,22 @@ minetest.register_globalstep(function(dtime)
 	if KEEP_ON_LAND then
 		if player_over_water(player) then
 			if last_ground_pos ~= nil then
-				player:set_pos(last_ground_pos)
-				pcall(function()
-					local v = player:get_velocity()
-					if v then player:add_velocity({x = -v.x, y = math.min(0, -v.y), z = -v.z}) end
-				end)
-			end
+					local cur = player:get_pos()
+					player:set_pos(last_ground_pos)
+					pcall(function()
+						local v = player:get_velocity()
+						if v then player:add_velocity({x = -v.x, y = math.min(0, -v.y), z = -v.z}) end
+						-- Nudge the player away from the water so it drifts back
+						-- onto land instead of pressing at the shoreline.
+						local dx = last_ground_pos.x - cur.x
+						local dz = last_ground_pos.z - cur.z
+						local d = math.sqrt(dx * dx + dz * dz)
+						if d > 0.01 then
+							local push = 3.0
+							player:add_velocity({x = (dx / d) * push, y = 0, z = (dz / d) * push})
+						end
+					end)
+				end
 		else
 			-- not over water: this position is safe, keep it as the anchor
 			last_ground_pos = player:get_pos()
