@@ -93,13 +93,16 @@ if COUNT_MAX < COUNT_MIN then COUNT_MAX = COUNT_MIN end
 local NUM_AGENTS = math.random(COUNT_MIN, COUNT_MAX)
 
 local MIN_RADIUS    = setting_number("dynamic_agents_min_radius", 4.0)
-local MAX_RADIUS    = setting_number("dynamic_agents_max_radius", 10.0)
+local MAX_RADIUS    = setting_number("dynamic_agents_max_radius", 12.0)
+-- Minimum horizontal spacing between mobs at spawn/relocation, so the herd is
+-- spread out (sparse) instead of clustered in one spot.
+local MIN_SEPARATION = setting_number("dynamic_agents_min_separation", 4.0)
 -- Keep the population topped up if mobs die/despawn during the episode.
 local MAINTAIN      = setting_true("dynamic_agents_maintain", true)
 -- Keep mobs near the player (so they stay observable within the episode): any
 -- mob that strays beyond this horizontal distance is relocated back near the
 -- player. 0 disables.
-local LEASH_RADIUS  = setting_number("dynamic_agents_leash_radius", 8.0)
+local LEASH_RADIUS  = setting_number("dynamic_agents_leash_radius", 14.0)
 -- Make every spawned mob behave like a passive land animal: no attacking /
 -- chasing, no self-destruct, no environmental death - just wander around.
 local NEUTRAL       = setting_true("dynamic_agents_neutral", true)
@@ -206,38 +209,56 @@ local function in_view(player, pos)
 	return dot >= VIEW_COS
 end
 
--- Find a ground spot around the player that is OUTSIDE the current view cone
--- (fanning out from directly behind the player). Returns a ground position or
--- nil if none is walkable / all candidates are in view this frame.
-local function out_of_view_ground(player, player_pos)
-	local look = player:get_look_dir()
-	local base = math.atan2(look.z, look.x)      -- look heading in ring convention
-	local margin = math.rad(VIEW_HALF_ANGLE + 15)
-	local offsets = {math.pi, math.pi - margin, math.pi + margin,
-	                 math.pi - margin * 0.5, math.pi + margin * 0.5}
-	local r_hi = MAX_RADIUS
-	if LEASH_RADIUS > 0 then r_hi = math.min(r_hi, LEASH_RADIUS - 1.0) end
-	if r_hi < MIN_RADIUS then r_hi = MIN_RADIUS end
-	for _, off in ipairs(offsets) do
-		local angle = base + off + (math.random() - 0.5) * margin
-		local r = MIN_RADIUS + math.random() * (r_hi - MIN_RADIUS)
-		local cand = {x = player_pos.x + r * math.cos(angle),
-		              y = player_pos.y,
-		              z = player_pos.z + r * math.sin(angle)}
-		if not in_view(player, cand) then
-			local ground = find_ground(cand)
-			if ground ~= nil and not in_view(player, ground) then
-				return ground
+-- Is `pos` too close (horizontally) to an already-placed mob? Keeps the herd
+-- sparse so mobs don't clump in one spot.
+local function too_close(pos)
+	local d2 = MIN_SEPARATION * MIN_SEPARATION
+	for slot = 1, NUM_AGENTS do
+		local o = tracked[slot]
+		if o ~= nil and o:get_luaentity() ~= nil then
+			local q = o:get_pos()
+			if q ~= nil then
+				local dx, dz = pos.x - q.x, pos.z - q.z
+				if (dx * dx + dz * dz) < d2 then
+					return true
+				end
 			end
 		end
 	end
-	return nil
+	return false
 end
 
--- Spawn a single agent for the given slot. Prefer a spot OUTSIDE the player's
--- view (so the mob is never seen to appear); fall back to a random ring spot
--- only if no out-of-view ground is available this frame.
-local function spawn_agent(slot, player_pos, player)
+-- Find a walkable ground spot in the ring [MIN_RADIUS, MAX_RADIUS] around the
+-- player, distributed at a random bearing (full 360 degrees) and kept sparse via
+-- too_close(). When `avoid_view` is set, the spot must also be OUTSIDE the
+-- player's current view cone (used for mid-episode respawn/relocation so mobs are
+-- never seen to appear). Returns (ground_pos, map_ready).
+local function find_spawn_ground(player, player_pos, avoid_view)
+	local map_ready = false
+	local gate = avoid_view and player ~= nil
+	for _ = 1, 24 do
+		local angle = math.random() * 2 * math.pi
+		local r = MIN_RADIUS + math.random() * (MAX_RADIUS - MIN_RADIUS)
+		local cand = {x = player_pos.x + r * math.cos(angle),
+		              y = player_pos.y,
+		              z = player_pos.z + r * math.sin(angle)}
+		if not (gate and in_view(player, cand)) then
+			local ground, ready = find_ground(cand)
+			map_ready = map_ready or ready
+			if ground ~= nil and not too_close(ground)
+			   and not (gate and in_view(player, ground)) then
+				return ground, true
+			end
+		end
+	end
+	return nil, map_ready
+end
+
+-- Spawn a single agent for the given slot. The initial population is distributed
+-- sparsely all around the player (avoid_view=false: it's the starting scene, in
+-- or out of view). Mid-episode respawns pass avoid_view=true so a replacement is
+-- only ever placed off-screen and never pops into the frame.
+local function spawn_agent(slot, player_pos, player, avoid_view)
 	local name = slot_entity[slot] or AGENT_NAME
 
 	-- Never try to spawn an unregistered entity (it would create an "unknown
@@ -247,21 +268,9 @@ local function spawn_agent(slot, player_pos, player)
 		return false, true
 	end
 
-	local ground, map_ready = nil, true
-	if player ~= nil then
-		ground = out_of_view_ground(player, player_pos)
-	end
+	local ground, map_ready = find_spawn_ground(player, player_pos, avoid_view)
 	if ground == nil then
-		local angle = math.random() * 2 * math.pi
-		local radius = MIN_RADIUS + math.random() * (MAX_RADIUS - MIN_RADIUS)
-		ground, map_ready = find_ground({
-			x = player_pos.x + radius * math.cos(angle),
-			y = player_pos.y,
-			z = player_pos.z + radius * math.sin(angle),
-		})
-		if ground == nil then
-			return false, map_ready
-		end
+		return false, map_ready
 	end
 
 	local obj = minetest.add_entity(ground, name)
@@ -289,8 +298,9 @@ local function spawn_agent(slot, player_pos, player)
 end
 
 -- Spawn the whole population, retrying on later frames until the map is ready.
--- Every (re)spawn is placed out of view, so mobs are present "from the start"
--- (behind the player, discovered as it turns) and topped-up mobs never pop in.
+-- The initial population (spawned == false) is distributed sparsely all around
+-- the player; later top-ups (spawned == true) are placed off-screen so they
+-- never pop into the frame.
 local function ensure_population(player, player_pos)
 	local map_ready = true
 	for slot = 1, NUM_AGENTS do
@@ -298,7 +308,7 @@ local function ensure_population(player, player_pos)
 			local obj = tracked[slot]
 			local alive = obj ~= nil and obj:get_luaentity() ~= nil
 			if not alive and (MAINTAIN or not spawned) then
-				local ok, ready = spawn_agent(slot, player_pos, player)
+				local ok, ready = spawn_agent(slot, player_pos, player, spawned)
 				map_ready = map_ready and ready
 			end
 		end
@@ -308,8 +318,8 @@ end
 
 -- Soft leash: mobs wander freely; only a mob that has strayed beyond
 -- LEASH_RADIUS *and* is currently OUT of view is quietly relocated to another
--- out-of-view ground spot near the player. The player never witnesses the move,
--- and in-view mobs are left to walk around on their own.
+-- sparse, off-screen ground spot near the player. The player never witnesses the
+-- move, and in-view mobs are left to walk around on their own.
 local function leash_agents(player, player_pos)
 	if LEASH_RADIUS <= 0 then
 		return
@@ -322,7 +332,7 @@ local function leash_agents(player, player_pos)
 				local dx, dz = p.x - player_pos.x, p.z - player_pos.z
 				if (dx * dx + dz * dz) > (LEASH_RADIUS * LEASH_RADIUS)
 				   and not in_view(player, p) then
-					local ground = out_of_view_ground(player, player_pos)
+					local ground = find_spawn_ground(player, player_pos, true)
 					if ground ~= nil then
 						obj:set_pos(ground)
 					end
