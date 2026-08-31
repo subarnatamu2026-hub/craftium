@@ -317,7 +317,9 @@ local function ensure_population(player, player_pos)
 			local obj = tracked[slot]
 			local alive = obj ~= nil and obj:get_luaentity() ~= nil
 			if not alive and (MAINTAIN or not spawned) then
-				local ok, ready = spawn_agent(slot, player_pos, player, spawned)
+				-- Always place off-screen (even the initial population), so a mob is
+				-- never seen to appear in frame - the player discovers them by turning.
+				local ok, ready = spawn_agent(slot, player_pos, player, true)
 				map_ready = map_ready and ready
 			end
 		end
@@ -339,6 +341,38 @@ local function cull_wild_mobs(player_pos)
 			local n = lua.name or ""
 			if n:sub(1, 8) == "mobs_mc:" then
 				o:remove()
+			end
+		end
+	end
+end
+
+-- Gently push apart any two mobs that are closer than MIN_SEPARATION, so the
+-- herd doesn't pile up on top of each other. Uses a small velocity nudge (not a
+-- teleport) so it looks natural and doesn't cause pop-in.
+local function declump_agents()
+	local d2 = MIN_SEPARATION * MIN_SEPARATION
+	for i = 1, NUM_AGENTS do
+		local oi = tracked[i]
+		if oi ~= nil and oi:get_luaentity() ~= nil then
+			local pi = oi:get_pos()
+			if pi ~= nil then
+				for j = i + 1, NUM_AGENTS do
+					local oj = tracked[j]
+					if oj ~= nil and oj:get_luaentity() ~= nil then
+						local pj = oj:get_pos()
+						if pj ~= nil then
+							local dx, dz = pi.x - pj.x, pi.z - pj.z
+							local dd = dx * dx + dz * dz
+							if dd > 1e-6 and dd < d2 then
+								local d = math.sqrt(dd)
+								local nx, nz = dx / d, dz / d
+								local push = 1.2
+								pcall(function() oi:add_velocity({x = nx * push, y = 0, z = nz * push}) end)
+								pcall(function() oj:add_velocity({x = -nx * push, y = 0, z = -nz * push}) end)
+							end
+						end
+					end
+				end
 			end
 		end
 	end
@@ -654,6 +688,7 @@ minetest.register_globalstep(function(_dtime)
 	-- episode (relocation happens only off-screen; see leash_agents).
 	if spawned then
 		leash_agents(player, player_pos)
+		declump_agents()
 	end
 
 	frame = frame + 1
