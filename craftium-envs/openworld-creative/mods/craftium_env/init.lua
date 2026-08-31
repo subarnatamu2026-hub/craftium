@@ -123,6 +123,14 @@ minetest.register_on_joinplayer(function(player, _last_login)
 		if minetest.global_exists("mcl_experience") and mcl_experience.remove_hud then
 			pcall(mcl_experience.remove_hud, player)
 		end
+		-- Apply the HUD flags immediately at join too (not just from the first
+		-- globalstep), so the very first captured frame already hides the hotbar
+		-- and the first-person wielded hand/item.
+		pcall(player.hud_set_flags, player, {
+			crosshair = false, basic_debug = false, chat = false,
+			hotbar = false, wielditem = false, healthbar = false,
+			breathbar = false, minimap = false, minimap_radar = false,
+		})
 	end
 
 end)
