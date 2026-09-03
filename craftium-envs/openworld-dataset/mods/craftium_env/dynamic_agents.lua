@@ -208,18 +208,26 @@ local function open_log()
 	end
 end
 
--- Find a walkable surface near `pos`, scanning downwards. Returns a spawn
--- position slightly above the ground, or nil if the map is not loaded yet.
+-- Find the top walkable SURFACE near `pos`, scanning downwards. A surface is a
+-- solid node with a non-solid node above it (so we don't pick the underside of
+-- an overhang). Returns a spawn position resting ON that surface (feet just above
+-- it, so the mob does NOT drop from the sky), or nil if the map isn't loaded yet.
 local function find_ground(pos)
 	local map_ready = false
-	for dy = 8, -10, -1 do
-		local p = {x = pos.x, y = pos.y + dy, z = pos.z}
+	local base = math.floor(pos.y + 0.5)
+	for dy = 6, -24, -1 do
+		local p = {x = pos.x, y = base + dy, z = pos.z}
 		local node = minetest.get_node_or_nil(p)
 		if node ~= nil then
 			map_ready = true
 			local def = minetest.registered_nodes[node.name]
 			if def and def.walkable then
-				return {x = pos.x, y = p.y + 1.5, z = pos.z}, map_ready
+				local above = minetest.get_node_or_nil({x = p.x, y = p.y + 1, z = p.z})
+				local adef = above and minetest.registered_nodes[above.name]
+				if not (adef and adef.walkable) then
+					-- node centre is p.y; its top is p.y+0.5 -> place feet just above
+					return {x = pos.x, y = p.y + 0.6, z = pos.z}, map_ready
+				end
 			end
 		end
 	end
@@ -340,9 +348,11 @@ local function ensure_population(player, player_pos)
 			local obj = tracked[slot]
 			local alive = obj ~= nil and obj:get_luaentity() ~= nil
 			if not alive and (MAINTAIN or not spawned) then
-				-- Always place off-screen (even the initial population), so a mob is
-				-- never seen to appear in frame - the player discovers them by turning.
-				local ok, ready = spawn_agent(slot, player_pos, player, true)
+				-- Initial population (not yet `spawned`): place on the ground right
+				-- away so ALL mobs are present from the start (a few may be in the
+				-- opening view - that's fine, they don't "appear", they're just
+				-- there). Later top-ups spawn off-screen so they never pop in.
+				local ok, ready = spawn_agent(slot, player_pos, player, spawned)
 				map_ready = map_ready and ready
 			end
 		end
