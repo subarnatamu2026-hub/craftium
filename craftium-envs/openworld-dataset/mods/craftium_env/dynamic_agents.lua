@@ -436,12 +436,26 @@ local function leash_agents(player, player_pos)
 		if obj ~= nil and obj:get_luaentity() ~= nil then
 			local p = obj:get_pos()
 			if p ~= nil then
-				local dx, dz = p.x - player_pos.x, p.z - player_pos.z
-				if (dx * dx + dz * dz) > (LEASH_RADIUS * LEASH_RADIUS)
-				   and not in_view(player, p) then
-					local ground = find_spawn_ground(player, player_pos, true)
-					if ground ~= nil then
-						obj:set_pos(ground)
+				local dx, dz = player_pos.x - p.x, player_pos.z - p.z  -- toward player
+				local d2 = dx * dx + dz * dz
+				if d2 > (LEASH_RADIUS * LEASH_RADIUS) then
+					local d = math.sqrt(d2)
+					-- SOFT leash: steer the mob to WALK back toward the player (a
+					-- velocity nudge, capped later by clamp_speed) instead of
+					-- teleporting it. This is what stops mobs vanishing and
+					-- reappearing elsewhere - they now move continuously.
+					local pull = math.min(MAX_SPEED, d - LEASH_RADIUS + 0.5)
+					pcall(function()
+						obj:add_velocity({x = (dx / d) * pull, y = 0, z = (dz / d) * pull})
+					end)
+					-- Failsafe ONLY: if a mob got extremely far (e.g. stuck across
+					-- water/a wall and cannot walk back) AND is off-screen, relocate
+					-- it once. This is rare and never happens in normal wandering.
+					if d > LEASH_RADIUS * 3 and not in_view(player, p) then
+						local ground = find_spawn_ground(player, player_pos, true)
+						if ground ~= nil then
+							obj:set_pos(ground)
+						end
 					end
 				end
 			end
