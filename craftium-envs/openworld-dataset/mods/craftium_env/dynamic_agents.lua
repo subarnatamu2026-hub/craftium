@@ -166,6 +166,18 @@ local function neutralize(lua)
 	if lua.run_velocity ~= nil then lua.run_velocity = math.min(lua.run_velocity, MAX_SPEED) end
 end
 
+-- True if the ground under `p` (or the node at foot level) is a liquid.
+local function _node_is_liquid(name)
+	local def = minetest.registered_nodes[name]
+	return def ~= nil and def.liquidtype ~= nil and def.liquidtype ~= "none"
+end
+local function mob_over_water(p)
+	local at = minetest.get_node_or_nil({x = p.x, y = p.y + 0.1, z = p.z})
+	local below = minetest.get_node_or_nil({x = p.x, y = p.y - 0.3, z = p.z})
+	return (at ~= nil and _node_is_liquid(at.name))
+	    or (below ~= nil and _node_is_liquid(below.name))
+end
+
 -- Hard-clamp a live mob's horizontal velocity to MAX_SPEED (keeps vertical
 -- velocity for natural falling/jumping). Safety net for physics/push spikes.
 local function clamp_speed(obj)
@@ -722,11 +734,20 @@ minetest.register_globalstep(function(_dtime)
 	if spawned then
 		leash_agents(player, player_pos)
 		declump_agents()
-		-- Cap every mob's speed AFTER leash/declump/AI have set velocities, so the
-		-- logged velocities and the on-screen motion are both within MAX_SPEED.
+		-- Pull any water-straying mob back toward the (land) player, then cap every
+		-- mob's speed AFTER leash/declump/AI have set velocities, so the logged
+		-- velocities and the on-screen motion are both within MAX_SPEED.
 		for slot = 1, NUM_AGENTS do
 			local obj = tracked[slot]
 			if obj ~= nil and obj:get_luaentity() ~= nil then
+				local p = obj:get_pos()
+				if p ~= nil and mob_over_water(p) then
+					local dx, dz = player_pos.x - p.x, player_pos.z - p.z
+					local d = math.sqrt(dx * dx + dz * dz)
+					if d > 0.01 then
+						pcall(function() obj:add_velocity({x = (dx / d) * 2.0, y = 0, z = (dz / d) * 2.0}) end)
+					end
+				end
 				clamp_speed(obj)
 			end
 		end

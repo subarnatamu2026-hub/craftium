@@ -34,11 +34,23 @@ local CLEAN_RGB = _setting_true("clean_rgb")
 -- If enabled, relocate the player onto solid, dry ground at episode start so the
 -- agent does not spawn in a water body (and then jump in place).
 local SPAWN_ON_LAND = _setting_true("spawn_on_land")
--- If enabled, keep the player on dry land for the WHOLE episode: any step onto
--- or into water is undone by snapping back to the last solid-ground position.
+-- If enabled, keep the player on dry land for the WHOLE episode. Instead of a
+-- hard snap-back at the water's edge (which jerks the camera), the player is now
+-- steered smoothly away from water it is approaching (see the globalstep below).
 local KEEP_ON_LAND = _setting_true("keep_player_on_land")
 local player_relocated = false
 local last_ground_pos = nil
+
+local function _setting_number(name, default)
+	local v = tonumber(minetest.settings:get(name))
+	if v == nil then return default end
+	return v
+end
+-- Keep the player at least this many blocks from any water (used both for the
+-- spawn location and the in-episode steering look-ahead).
+local WATER_AVOID_RADIUS = _setting_number("water_avoid_radius", 12)
+local WATER_LOOKAHEAD    = _setting_number("water_lookahead", 12)
+local WATER_PUSH         = _setting_number("water_push_strength", 2.5)
 
 local function _is_liquid(name)
 	local def = minetest.registered_nodes[name]
@@ -50,13 +62,32 @@ local function _is_solid(name)
 	return def ~= nil and def.walkable == true and not _is_liquid(name)
 end
 
+-- Is there any liquid within `radius` (horizontal) of column (x,z), near the
+-- surface level `y`? Used to keep the player away from shorelines.
+local function has_water_near(x, y, z, radius)
+	for dx = -radius, radius, 2 do
+		for dz = -radius, radius, 2 do
+			for dy = 2, -4, -1 do
+				local n = minetest.get_node_or_nil({x = x + dx, y = y + dy, z = z + dz})
+				if n ~= nil and _is_liquid(n.name) then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
 -- Find a dry ground surface near `pos`. Scans expanding rings and returns a
 -- standing position (surface + 1) whose surface node is solid and the two nodes
--- above are air/non-liquid; returns nil if none found or the map isn't ready.
-local function find_dry_ground(pos)
+-- above are air/non-liquid. When `avoid_radius` > 0 the spot must also have NO
+-- water within that radius (so the player spawns away from shorelines). Returns
+-- nil if none found or the map isn't ready.
+local function find_dry_ground(pos, avoid_radius)
+	avoid_radius = avoid_radius or 0
 	local cx, cy, cz = math.floor(pos.x + 0.5), math.floor(pos.y + 0.5), math.floor(pos.z + 0.5)
 	local map_ready = false
-	for r = 0, 24, 2 do
+	for r = 0, 40, 2 do
 		for dx = -r, r, 2 do
 			for dz = -r, r, 2 do
 				-- only the ring at radius r
@@ -71,7 +102,8 @@ local function find_dry_ground(pos)
 							if _is_solid(n.name) and above ~= nil and above2 ~= nil
 							   and not minetest.registered_nodes[above.name].walkable
 							   and not _is_liquid(above.name)
-							   and not _is_liquid(above2.name) then
+							   and not _is_liquid(above2.name)
+							   and (avoid_radius <= 0 or not has_water_near(x, y, z, avoid_radius)) then
 								return {x = x, y = y + 1, z = z}, map_ready
 							end
 						end
@@ -93,6 +125,41 @@ local function player_over_water(player)
 	if at ~= nil and _is_liquid(at.name) then return true end
 	if below ~= nil and _is_liquid(below.name) then return true end
 	return false
+end
+
+-- Look around the player for water within WATER_LOOKAHEAD and return a unit
+-- direction pointing AWAY from it (plus the distance to the nearest water), or
+-- nil if there's no water nearby. Sampled along 12 rays so the push points away
+-- from whichever shore is closest.
+local _WATER_DIRS = {}
+for i = 0, 11 do
+	local a = i * (math.pi / 6)
+	_WATER_DIRS[#_WATER_DIRS + 1] = {math.cos(a), math.sin(a)}
+end
+local function water_repel(pos)
+	local ax, az, nearest = 0, 0, nil
+	for _, d in ipairs(_WATER_DIRS) do
+		local cx, cz = d[1], d[2]
+		for r = 2, WATER_LOOKAHEAD, 2 do
+			local x, z = pos.x + cx * r, pos.z + cz * r
+			local hit = false
+			for dy = 1, -3, -1 do
+				local n = minetest.get_node_or_nil({x = x, y = pos.y + dy, z = z})
+				if n ~= nil and _is_liquid(n.name) then hit = true break end
+			end
+			if hit then
+				local w = (WATER_LOOKAHEAD - r + 1)   -- closer water pushes harder
+				ax = ax - cx * w
+				az = az - cz * w
+				if nearest == nil or r < nearest then nearest = r end
+				break   -- only the nearest water along this ray
+			end
+		end
+	end
+	if nearest == nil then return nil end
+	local m = math.sqrt(ax * ax + az * az)
+	if m < 1e-6 then return nil end
+	return ax / m, az / m, nearest
 end
 
 -- executed when the player joins the game
@@ -158,8 +225,16 @@ minetest.register_globalstep(function(dtime)
 		local here = minetest.get_node_or_nil({x = ppos.x, y = ppos.y + 0.1, z = ppos.z})
 		if feet ~= nil and here ~= nil then
 			-- Map is loaded around the player; decide if relocation is needed.
-			if _is_liquid(feet.name) or _is_liquid(here.name) then
-				local dry, ready = find_dry_ground(ppos)
+			local on_water = _is_liquid(feet.name) or _is_liquid(here.name)
+			local near_water = has_water_near(math.floor(ppos.x + 0.5),
+				math.floor(ppos.y + 0.5), math.floor(ppos.z + 0.5), WATER_AVOID_RADIUS)
+			if on_water or near_water then
+				-- Prefer a spot with NO water within WATER_AVOID_RADIUS; if none
+				-- exists nearby, fall back to any dry spot so spawn never fails.
+				local dry, ready = find_dry_ground(ppos, WATER_AVOID_RADIUS)
+				if dry == nil and ready then
+					dry, ready = find_dry_ground(ppos, 0)
+				end
 				if dry ~= nil then
 					player:set_pos(dry)
 					pcall(function() player:add_velocity(vector.multiply(player:get_velocity() or {x=0,y=0,z=0}, -1)) end)
@@ -170,7 +245,7 @@ minetest.register_globalstep(function(dtime)
 					player_relocated = true
 				end
 			else
-				player_relocated = true  -- already on land
+				player_relocated = true  -- already on land, away from water
 				last_ground_pos = ppos
 			end
 		end
@@ -184,26 +259,39 @@ minetest.register_globalstep(function(dtime)
 	-- never enters the water. Normal walking/jumping on land is untouched.
 	if KEEP_ON_LAND then
 		if player_over_water(player) then
+			-- Failsafe only (should be rare now): the player is actually on water,
+			-- ease it back to the last safe ground and kill horizontal velocity.
 			if last_ground_pos ~= nil then
-					local cur = player:get_pos()
+				pcall(function()
 					player:set_pos(last_ground_pos)
-					pcall(function()
-						local v = player:get_velocity()
-						if v then player:add_velocity({x = -v.x, y = math.min(0, -v.y), z = -v.z}) end
-						-- Nudge the player away from the water so it drifts back
-						-- onto land instead of pressing at the shoreline.
-						local dx = last_ground_pos.x - cur.x
-						local dz = last_ground_pos.z - cur.z
-						local d = math.sqrt(dx * dx + dz * dz)
-						if d > 0.01 then
-							local push = 3.0
-							player:add_velocity({x = (dx / d) * push, y = 0, z = (dz / d) * push})
-						end
-					end)
-				end
+					local v = player:get_velocity()
+					if v then player:add_velocity({x = -v.x, y = math.min(0, -v.y), z = -v.z}) end
+				end)
+			end
 		else
-			-- not over water: this position is safe, keep it as the anchor
+			-- On safe land: remember it as the anchor, AND steer smoothly away from
+			-- any water within WATER_LOOKAHEAD by cancelling the velocity heading
+			-- toward it and adding a gentle outward push (no snap = no camera jerk).
 			last_ground_pos = player:get_pos()
+			local ax, az, nearest = water_repel(player:get_pos())
+			if ax ~= nil then
+				pcall(function()
+					local v = player:get_velocity() or {x = 0, y = 0, z = 0}
+					local tx, tz = -ax, -az                 -- toward-water direction
+					local comp = v.x * tx + v.z * tz        -- speed heading into water
+					local imp = {x = 0, y = 0, z = 0}
+					if comp > 0 then                        -- cancel the into-water part
+						imp.x = imp.x - comp * tx
+						imp.z = imp.z - comp * tz
+					end
+					local strength = WATER_PUSH * (1 - (nearest - 1) / WATER_LOOKAHEAD)
+					if strength < 0 then strength = 0 end
+					imp.x = imp.x + ax * strength
+					imp.z = imp.z + az * strength
+					player:add_velocity(imp)
+				end)
+			end
+			-- (kept for structure; the original branch also updated last_ground_pos)
 		end
 	end
 
