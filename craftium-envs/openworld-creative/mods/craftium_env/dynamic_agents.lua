@@ -726,14 +726,19 @@ minetest.register_globalstep(function(_dtime)
 
 	if not spawned then
 		local map_ready = ensure_population(player, player_pos)
-		-- Consider the population "spawned" once the map was ready and at
-		-- least one agent exists.
+		-- Keep trying every frame until ALL slots are placed (or permanently
+		-- failed), so the full initial population spawns even when MAINTAIN is off
+		-- (free-roam). A deadline stops us retrying forever on bad terrain.
 		if map_ready then
+			local all_done = true
 			for slot = 1, NUM_AGENTS do
-				if tracked[slot] ~= nil then
-					spawned = true
+				if tracked[slot] == nil and not slot_failed[slot] then
+					all_done = false
 					break
 				end
+			end
+			if all_done or frame > 90 then
+				spawned = true
 			end
 		end
 	elseif MAINTAIN then
