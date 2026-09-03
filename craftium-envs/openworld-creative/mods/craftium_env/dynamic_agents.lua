@@ -125,6 +125,13 @@ local VIEW_EYE_HEIGHT = 1.5   -- approx player eye height above feet
 local CULL_WILD   = setting_true("dynamic_agents_cull_wild", true)
 local CULL_RADIUS = setting_number("dynamic_agents_cull_radius", 96.0)
 
+-- Cap how fast a mob may move (blocks/second, horizontal). Some VoxeLibre mobs
+-- (horses, spiders, etc.) run very fast, which looks unnatural in the dataset.
+-- We both lower their configured walk/run speeds (source) and hard-clamp their
+-- actual horizontal velocity every frame (safety net). Vertical velocity
+-- (falling/jumping) is left alone.
+local MAX_SPEED = setting_number("dynamic_agents_max_speed", 3.0)
+
 -- Reconfigure a mob's luaentity so its AI never hunts/attacks and it does not
 -- die to sunlight/fire/water. Safe to over-set fields a given mob doesn't use.
 local function neutralize(lua)
@@ -154,6 +161,22 @@ local function neutralize(lua)
 	lua.explosion_radius = 0
 	lua.explosion_damage_radius = 0
 	lua.explosion_strength = 0
+	-- cap configured movement speeds so mobs don't zip around unnaturally fast
+	if lua.walk_velocity ~= nil then lua.walk_velocity = math.min(lua.walk_velocity, MAX_SPEED) end
+	if lua.run_velocity ~= nil then lua.run_velocity = math.min(lua.run_velocity, MAX_SPEED) end
+end
+
+-- Hard-clamp a live mob's horizontal velocity to MAX_SPEED (keeps vertical
+-- velocity for natural falling/jumping). Safety net for physics/push spikes.
+local function clamp_speed(obj)
+	if MAX_SPEED <= 0 then return end
+	local ok, v = pcall(function() return obj:get_velocity() end)
+	if not ok or v == nil then return end
+	local h = math.sqrt(v.x * v.x + v.z * v.z)
+	if h > MAX_SPEED then
+		local s = MAX_SPEED / h
+		pcall(function() obj:set_velocity({x = v.x * s, y = v.y, z = v.z * s}) end)
+	end
 end
 
 -- Assign each slot a (random) entity type from the list, fixed for the episode
@@ -366,7 +389,7 @@ local function declump_agents()
 							if dd > 1e-6 and dd < d2 then
 								local d = math.sqrt(dd)
 								local nx, nz = dx / d, dz / d
-								local push = 1.2
+								local push = 0.6
 								pcall(function() oi:add_velocity({x = nx * push, y = 0, z = nz * push}) end)
 								pcall(function() oj:add_velocity({x = -nx * push, y = 0, z = -nz * push}) end)
 							end
@@ -689,6 +712,14 @@ minetest.register_globalstep(function(_dtime)
 	if spawned then
 		leash_agents(player, player_pos)
 		declump_agents()
+		-- Cap every mob's speed AFTER leash/declump/AI have set velocities, so the
+		-- logged velocities and the on-screen motion are both within MAX_SPEED.
+		for slot = 1, NUM_AGENTS do
+			local obj = tracked[slot]
+			if obj ~= nil and obj:get_luaentity() ~= nil then
+				clamp_speed(obj)
+			end
+		end
 	end
 
 	frame = frame + 1
