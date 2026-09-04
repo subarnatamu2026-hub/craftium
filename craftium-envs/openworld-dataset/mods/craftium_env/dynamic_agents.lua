@@ -864,6 +864,18 @@ minetest.register_globalstep(function(_dtime)
 		for slot = 1, NUM_AGENTS do
 			local obj = tracked[slot]
 			if obj ~= nil and obj:get_luaentity() ~= nil then
+				-- Re-assert collision every frame so solid voxels stay RIGID to the
+				-- mob (it can never pass through a solid block). Node/terrain (voxel)
+				-- collision is governed by `physical`; `collide_with_objects` only
+				-- stops mob-vs-mob / mob-vs-player overlap. The mob framework can
+				-- reset these on state changes / neutralisation, so we force them
+				-- back whenever they are not already set.
+				pcall(function()
+					local pr = obj:get_properties()
+					if pr and (pr.physical ~= true or pr.collide_with_objects ~= true) then
+						obj:set_properties({physical = true, collide_with_objects = true})
+					end
+				end)
 				local p = obj:get_pos()
 				if p ~= nil then
 					-- proactive: if water is within a few blocks, push away from it
