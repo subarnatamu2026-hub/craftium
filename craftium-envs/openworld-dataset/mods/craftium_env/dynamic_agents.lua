@@ -99,6 +99,11 @@ local MAX_RADIUS    = setting_number("dynamic_agents_max_radius", 12.0)
 local MIN_SEPARATION = setting_number("dynamic_agents_min_separation", 4.0)
 -- Keep the population topped up if mobs die/despawn during the episode.
 local MAINTAIN      = setting_true("dynamic_agents_maintain", true)
+-- Spawn the initial population ONCE and never create or relocate a mob again
+-- mid-episode, so the environment does not change after the start (no new mob
+-- ever appears behind/around the player). Overrides MAINTAIN and the leash
+-- relocation failsafe when true.
+local SPAWN_ONCE    = setting_true("dynamic_agents_spawn_once", true)
 -- Keep mobs near the player (so they stay observable within the episode): any
 -- mob that strays beyond this horizontal distance is relocated back near the
 -- player. 0 disables.
@@ -448,10 +453,10 @@ local function leash_agents(player, player_pos)
 					pcall(function()
 						obj:add_velocity({x = (dx / d) * pull, y = 0, z = (dz / d) * pull})
 					end)
-					-- Failsafe ONLY: if a mob got extremely far (e.g. stuck across
-					-- water/a wall and cannot walk back) AND is off-screen, relocate
-					-- it once. This is rare and never happens in normal wandering.
-					if d > LEASH_RADIUS * 3 and not in_view(player, p) then
+					-- Failsafe ONLY (disabled under SPAWN_ONCE): if a mob got extremely
+					-- far (stuck across water/a wall and cannot walk back) AND is
+					-- off-screen, relocate it once. Never fires in normal wandering.
+					if not SPAWN_ONCE and d > LEASH_RADIUS * 3 and not in_view(player, p) then
 						local ground = find_spawn_ground(player, player_pos, true)
 						if ground ~= nil then
 							obj:set_pos(ground)
@@ -741,7 +746,9 @@ minetest.register_globalstep(function(_dtime)
 				spawned = true
 			end
 		end
-	elseif MAINTAIN then
+	elseif MAINTAIN and not SPAWN_ONCE then
+		-- Only tops up mid-episode when explicitly allowed. With SPAWN_ONCE (the
+		-- default) no mob is ever created after the initial population.
 		ensure_population(player, player_pos)
 	end
 
