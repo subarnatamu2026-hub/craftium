@@ -46,11 +46,9 @@ local function _setting_number(name, default)
 	if v == nil then return default end
 	return v
 end
--- Keep the player at least this many blocks from any water (used both for the
--- spawn location and the in-episode steering look-ahead).
+-- Keep the player's spawn at least this many blocks from any water (used only
+-- for choosing the spawn location; there is no in-episode steering any more).
 local WATER_AVOID_RADIUS = _setting_number("water_avoid_radius", 12)
-local WATER_LOOKAHEAD    = _setting_number("water_lookahead", 12)
-local WATER_PUSH         = _setting_number("water_push_strength", 2.5)
 
 local function _is_liquid(name)
 	local def = minetest.registered_nodes[name]
@@ -208,67 +206,9 @@ local function player_over_water(player)
 	return false
 end
 
--- Is (x,z) near height y a HAZARD to walk toward? True for: water, a solid wall
--- at body height, or an edge/pit (no ground within EDGE_DROP below). Used to
--- steer the player away from water, walls and drop-offs before it reaches them.
-local EDGE_DROP = 3
-local function _hazard_at(x, y, z)
-	-- water at/just below foot level
-	for dy = 1, -3, -1 do
-		local n = minetest.get_node_or_nil({x = x, y = y + dy, z = z})
-		if n ~= nil and _is_liquid(n.name) then return true end
-	end
-	-- a real WALL ahead (solid at both body blocks, i.e. >=2 tall, not a step the
-	-- player can just walk up)
-	local w1 = minetest.get_node_or_nil({x = x, y = y + 1, z = z})
-	local w2 = minetest.get_node_or_nil({x = x, y = y + 2, z = z})
-	if w1 ~= nil and w2 ~= nil
-	   and minetest.registered_nodes[w1.name] and minetest.registered_nodes[w1.name].walkable
-	   and minetest.registered_nodes[w2.name] and minetest.registered_nodes[w2.name].walkable then
-		return true
-	end
-	-- an edge / pit: no solid ground within EDGE_DROP below
-	for dy = 0, -EDGE_DROP, -1 do
-		local n = minetest.get_node_or_nil({x = x, y = y + dy, z = z})
-		if n ~= nil then
-			local def = minetest.registered_nodes[n.name]
-			if def and def.walkable and not _is_liquid(n.name) then
-				return false   -- ground found -> not an edge
-			end
-		end
-	end
-	return true   -- nothing solid below within EDGE_DROP -> a drop-off
-end
-
--- Look around the player within WATER_LOOKAHEAD for hazards (water / walls /
--- edges) and return a unit direction AWAY from them plus the nearest distance,
--- or nil if none. Sampled along 12 rays so the push points away from whichever
--- hazard is closest.
-local _WATER_DIRS = {}
-for i = 0, 11 do
-	local a = i * (math.pi / 6)
-	_WATER_DIRS[#_WATER_DIRS + 1] = {math.cos(a), math.sin(a)}
-end
-local function water_repel(pos)
-	local ax, az, nearest = 0, 0, nil
-	for _, d in ipairs(_WATER_DIRS) do
-		local cx, cz = d[1], d[2]
-		for r = 2, WATER_LOOKAHEAD, 2 do
-			local x, z = pos.x + cx * r, pos.z + cz * r
-			if _hazard_at(x, pos.y, z) then
-				local w = (WATER_LOOKAHEAD - r + 1)   -- closer hazard pushes harder
-				ax = ax - cx * w
-				az = az - cz * w
-				if nearest == nil or r < nearest then nearest = r end
-				break   -- only the nearest hazard along this ray
-			end
-		end
-	end
-	if nearest == nil then return nil end
-	local m = math.sqrt(ax * ax + az * az)
-	if m < 1e-6 then return nil end
-	return ax / m, az / m, nearest
-end
+-- NOTE: the player is NOT steered away from walls, trees or cliff edges - only
+-- water is guarded against (see the globalstep below). Any level where the
+-- player walks into a wall/tree can simply be discarded during dataset cleanup.
 
 -- executed when the player joins the game
 minetest.register_on_joinplayer(function(player, _last_login)
@@ -345,7 +285,6 @@ minetest.register_globalstep(function(dtime)
 				end
 				if dry ~= nil then
 					player:set_pos(dry)
-					pcall(function() player:add_velocity(vector.multiply(player:get_velocity() or {x=0,y=0,z=0}, -1)) end)
 					player_relocated = true
 					last_ground_pos = dry
 				elseif ready then
@@ -359,41 +298,19 @@ minetest.register_globalstep(function(dtime)
 		end
 	end
 
-	-- Keep the player on dry land for the whole episode. Each step we remember
-	-- the immediately-previous non-water position; the instant a step would put
-	-- the player on/into water we restore that position and cancel velocity. The
-	-- anchor is at most one small step away, so the player is simply *held at the
-	-- water's edge* (an invisible wall) rather than teleported backwards - it
-	-- never enters the water. Normal walking/jumping on land is untouched.
+	-- Keep the player out of the water for the whole episode - and ONLY the water.
+	-- No velocity is ever added or cancelled here. Each frame we simply remember
+	-- the last dry-land position; the instant a step lands the player on/into
+	-- water we set the position back to that anchor. The player is held at the
+	-- water's edge (position-only, one step back). Walls, trees and cliff edges
+	-- are left completely alone - normal Craftium movement is untouched.
 	if KEEP_ON_LAND then
 		if player_over_water(player) then
-			-- Failsafe only (should be rare now): the player is actually on water,
-			-- ease it back to the last safe ground and kill horizontal velocity.
 			if last_ground_pos ~= nil then
-				pcall(function()
-					player:set_pos(last_ground_pos)
-					local v = player:get_velocity()
-					if v then player:add_velocity({x = -v.x, y = math.min(0, -v.y), z = -v.z}) end
-				end)
+				pcall(function() player:set_pos(last_ground_pos) end)
 			end
 		else
-			-- On safe land: remember it as the anchor. If the player is heading INTO
-			-- a nearby hazard (water/pit edge), cancel only that inward part of the
-			-- velocity so it doesn't step in. We do NOT add any outward push - adding
-			-- an impulse every frame accumulated and made the player move far too
-			-- fast; cancelling-only keeps normal Craftium movement speed.
 			last_ground_pos = player:get_pos()
-			local ax, az = water_repel(player:get_pos())
-			if ax ~= nil then
-				pcall(function()
-					local v = player:get_velocity() or {x = 0, y = 0, z = 0}
-					local tx, tz = -ax, -az                 -- direction toward the hazard
-					local comp = v.x * tx + v.z * tz        -- speed heading into it
-					if comp > 0 then                        -- moving toward hazard: null it out
-						player:add_velocity({x = -comp * tx, y = 0, z = -comp * tz})
-					end
-				end)
-			end
 		end
 	end
 
