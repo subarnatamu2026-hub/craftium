@@ -377,29 +377,23 @@ minetest.register_globalstep(function(dtime)
 				end)
 			end
 		else
-			-- On safe land: remember it as the anchor, AND steer smoothly away from
-			-- any water within WATER_LOOKAHEAD by cancelling the velocity heading
-			-- toward it and adding a gentle outward push (no snap = no camera jerk).
+			-- On safe land: remember it as the anchor. If the player is heading INTO
+			-- a nearby hazard (water/pit edge), cancel only that inward part of the
+			-- velocity so it doesn't step in. We do NOT add any outward push - adding
+			-- an impulse every frame accumulated and made the player move far too
+			-- fast; cancelling-only keeps normal Craftium movement speed.
 			last_ground_pos = player:get_pos()
-			local ax, az, nearest = water_repel(player:get_pos())
+			local ax, az = water_repel(player:get_pos())
 			if ax ~= nil then
 				pcall(function()
 					local v = player:get_velocity() or {x = 0, y = 0, z = 0}
-					local tx, tz = -ax, -az                 -- toward-water direction
-					local comp = v.x * tx + v.z * tz        -- speed heading into water
-					local imp = {x = 0, y = 0, z = 0}
-					if comp > 0 then                        -- cancel the into-water part
-						imp.x = imp.x - comp * tx
-						imp.z = imp.z - comp * tz
+					local tx, tz = -ax, -az                 -- direction toward the hazard
+					local comp = v.x * tx + v.z * tz        -- speed heading into it
+					if comp > 0 then                        -- moving toward hazard: null it out
+						player:add_velocity({x = -comp * tx, y = 0, z = -comp * tz})
 					end
-					local strength = WATER_PUSH * (1 - (nearest - 1) / WATER_LOOKAHEAD)
-					if strength < 0 then strength = 0 end
-					imp.x = imp.x + ax * strength
-					imp.z = imp.z + az * strength
-					player:add_velocity(imp)
 				end)
 			end
-			-- (kept for structure; the original branch also updated last_ground_pos)
 		end
 	end
 

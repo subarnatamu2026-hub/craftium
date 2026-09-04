@@ -10,11 +10,265 @@ voxel_radius = {
 	z = minetest.settings:get("voxel_obs_rz")
 }
 
--- names of the items included in the initial inventory
-init_tools = {} --{ "mcl_tools:axe_stone", "mcl_torches:torch 256" }
+local init_inv_string = minetest.settings:get("starting_inventory_creative")
+-- Parse into a Lua table
+init_inv = {}
+if init_inv_string then
+    for item in string.gmatch(init_inv_string, '([^,]+)') do
+        table.insert(init_inv, item)
+    end
+end
 
-timeofday_step = 1 / 5000 -- day/night cycle lasts 5000 steps
 timeofday = tonumber(minetest.settings:get("world_start_time"))/24000
+
+-- Whether to hide all HUD elements and the first-person wielded hand/item from
+-- the RGB observation (purely visual; does not affect actions/observations).
+local function _setting_true(name)
+	local v = minetest.settings:get(name)
+	if v == nil then return false end
+	v = string.lower(tostring(v))
+	return v == "true" or v == "1" or v == "yes"
+end
+local CLEAN_RGB = _setting_true("clean_rgb")
+
+-- If enabled, relocate the player onto solid, dry ground at episode start so the
+-- agent does not spawn in a water body (and then jump in place).
+local SPAWN_ON_LAND = _setting_true("spawn_on_land")
+-- If enabled, keep the player on dry land for the WHOLE episode. Instead of a
+-- hard snap-back at the water's edge (which jerks the camera), the player is now
+-- steered smoothly away from water it is approaching (see the globalstep below).
+local KEEP_ON_LAND = _setting_true("keep_player_on_land")
+local player_relocated = false
+local last_ground_pos = nil
+
+local function _setting_number(name, default)
+	local v = tonumber(minetest.settings:get(name))
+	if v == nil then return default end
+	return v
+end
+-- Keep the player at least this many blocks from any water (used both for the
+-- spawn location and the in-episode steering look-ahead).
+local WATER_AVOID_RADIUS = _setting_number("water_avoid_radius", 12)
+local WATER_LOOKAHEAD    = _setting_number("water_lookahead", 12)
+local WATER_PUSH         = _setting_number("water_push_strength", 2.5)
+
+local function _is_liquid(name)
+	local def = minetest.registered_nodes[name]
+	return def ~= nil and def.liquidtype ~= nil and def.liquidtype ~= "none"
+end
+
+local function _is_solid(name)
+	local def = minetest.registered_nodes[name]
+	return def ~= nil and def.walkable == true and not _is_liquid(name)
+end
+
+-- Is there any liquid within `radius` (horizontal) of column (x,z), near the
+-- surface level `y`? Used to keep the player away from shorelines.
+local function has_water_near(x, y, z, radius)
+	for dx = -radius, radius, 2 do
+		for dz = -radius, radius, 2 do
+			for dy = 2, -4, -1 do
+				local n = minetest.get_node_or_nil({x = x + dx, y = y + dy, z = z + dz})
+				if n ~= nil and _is_liquid(n.name) then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+-- Foliage / tree material we must not treat as ground (no spawning on leaves).
+local function _is_leaflike(name)
+	return minetest.get_item_group(name, "leaves") > 0
+	    or minetest.get_item_group(name, "tree") > 0
+	    or minetest.get_item_group(name, "sapling") > 0
+end
+
+-- No solid node within `up` blocks above -> open to the sky (not a cave/tunnel).
+local function _open_sky(x, y, z, up)
+	for dy = 1, up do
+		local n = minetest.get_node_or_nil({x = x, y = y + dy, z = z})
+		if n ~= nil and minetest.registered_nodes[n.name]
+		   and minetest.registered_nodes[n.name].walkable then
+			return false
+		end
+	end
+	return true
+end
+
+-- Top solid, non-liquid, non-leaf surface height at column (x,z) near y, or nil.
+local function _surface_y(x, y, z)
+	for yy = y + 6, y - 24, -1 do
+		local n = minetest.get_node_or_nil({x = x, y = yy, z = z})
+		if n ~= nil then
+			local def = minetest.registered_nodes[n.name]
+			if def and def.walkable and not _is_liquid(n.name) and not _is_leaflike(n.name) then
+				return yy
+			end
+		end
+	end
+	return nil
+end
+
+-- Is the ground around (x,z) roughly level (no cliff edge / pit rim)? Every
+-- neighbour column within `radius` must have ground no more than `max_drop`
+-- below (and not missing) -> not on the lip of a cliff or a hole.
+local function _flat_around(x, y, z, radius, max_drop)
+	for dx = -radius, radius do
+		for dz = -radius, radius do
+			if dx ~= 0 or dz ~= 0 then
+				local sy = _surface_y(x + dx, y, z + dz)
+				if sy == nil or (y - sy) > max_drop or (sy - y) > max_drop then
+					return false
+				end
+			end
+		end
+	end
+	return true
+end
+
+-- No solid nodes at body height within `radius` -> not wedged inside trees/walls.
+local function _clear_around(x, y, z, radius)
+	for dx = -radius, radius do
+		for dz = -radius, radius do
+			for dy = 1, 2 do
+				local n = minetest.get_node_or_nil({x = x + dx, y = y + dy, z = z + dz})
+				if n ~= nil and minetest.registered_nodes[n.name]
+				   and minetest.registered_nodes[n.name].walkable then
+					return false
+				end
+			end
+		end
+	end
+	return true
+end
+
+-- Is the surface node at (x,y,z) a good place to stand? `strict` additionally
+-- requires open sky (not a cave), flat surroundings (not a cliff edge / pit) and
+-- clear body space (not inside trees/walls).
+local function _good_surface(x, y, z, avoid_radius, strict)
+	local n = minetest.get_node_or_nil({x = x, y = y, z = z})
+	if n == nil or not _is_solid(n.name) or _is_leaflike(n.name) then return false end
+	local a1 = minetest.get_node_or_nil({x = x, y = y + 1, z = z})
+	local a2 = minetest.get_node_or_nil({x = x, y = y + 2, z = z})
+	if a1 == nil or a2 == nil then return false end
+	if minetest.registered_nodes[a1.name].walkable or _is_liquid(a1.name) or _is_liquid(a2.name) then
+		return false
+	end
+	if avoid_radius > 0 and has_water_near(x, y, z, avoid_radius) then return false end
+	if strict then
+		if not _open_sky(x, y, z, 8) then return false end        -- not a cave
+		if not _clear_around(x, y, z, 1) then return false end     -- not in trees/walls
+		if not _flat_around(x, y, z, 2, 2) then return false end   -- not a cliff edge / pit
+	end
+	return true
+end
+
+-- Find a good standing position near `pos`. Two passes: first STRICT (open sky,
+-- flat, clear of trees, dry) so the player never spawns in a cave, on a cliff
+-- edge, inside trees, or by water; then a RELAXED pass (dry, real ground) as a
+-- fallback so spawning never fails. Returns standing pos (surface+1) or nil.
+local function find_dry_ground(pos, avoid_radius)
+	avoid_radius = avoid_radius or 0
+	local cx, cy, cz = math.floor(pos.x + 0.5), math.floor(pos.y + 0.5), math.floor(pos.z + 0.5)
+	local map_ready = false
+	for _, strict in ipairs({true, false}) do
+		for r = 0, 40, 2 do
+			for dx = -r, r, 2 do
+				for dz = -r, r, 2 do
+					if math.abs(dx) == r or math.abs(dz) == r or r == 0 then
+						local x, z = cx + dx, cz + dz
+						for y = cy + 12, cy - 16, -1 do
+							local n = minetest.get_node_or_nil({x = x, y = y, z = z})
+							if n ~= nil then
+								map_ready = true
+								if _good_surface(x, y, z, avoid_radius, strict) then
+									return {x = x, y = y + 1, z = z}, map_ready
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return nil, map_ready
+end
+
+-- True if the player is standing on/inside water (feet node or the support
+-- node just below is a liquid). Jumping over land is NOT flagged (support is air
+-- but not liquid), so normal navigation is unaffected.
+local function player_over_water(player)
+	local p = player:get_pos()
+	local at = minetest.get_node_or_nil({x = p.x, y = p.y + 0.1, z = p.z})
+	local below = minetest.get_node_or_nil({x = p.x, y = p.y - 0.5, z = p.z})
+	if at ~= nil and _is_liquid(at.name) then return true end
+	if below ~= nil and _is_liquid(below.name) then return true end
+	return false
+end
+
+-- Is (x,z) near height y a HAZARD to walk toward? True for: water, a solid wall
+-- at body height, or an edge/pit (no ground within EDGE_DROP below). Used to
+-- steer the player away from water, walls and drop-offs before it reaches them.
+local EDGE_DROP = 3
+local function _hazard_at(x, y, z)
+	-- water at/just below foot level
+	for dy = 1, -3, -1 do
+		local n = minetest.get_node_or_nil({x = x, y = y + dy, z = z})
+		if n ~= nil and _is_liquid(n.name) then return true end
+	end
+	-- a real WALL ahead (solid at both body blocks, i.e. >=2 tall, not a step the
+	-- player can just walk up)
+	local w1 = minetest.get_node_or_nil({x = x, y = y + 1, z = z})
+	local w2 = minetest.get_node_or_nil({x = x, y = y + 2, z = z})
+	if w1 ~= nil and w2 ~= nil
+	   and minetest.registered_nodes[w1.name] and minetest.registered_nodes[w1.name].walkable
+	   and minetest.registered_nodes[w2.name] and minetest.registered_nodes[w2.name].walkable then
+		return true
+	end
+	-- an edge / pit: no solid ground within EDGE_DROP below
+	for dy = 0, -EDGE_DROP, -1 do
+		local n = minetest.get_node_or_nil({x = x, y = y + dy, z = z})
+		if n ~= nil then
+			local def = minetest.registered_nodes[n.name]
+			if def and def.walkable and not _is_liquid(n.name) then
+				return false   -- ground found -> not an edge
+			end
+		end
+	end
+	return true   -- nothing solid below within EDGE_DROP -> a drop-off
+end
+
+-- Look around the player within WATER_LOOKAHEAD for hazards (water / walls /
+-- edges) and return a unit direction AWAY from them plus the nearest distance,
+-- or nil if none. Sampled along 12 rays so the push points away from whichever
+-- hazard is closest.
+local _WATER_DIRS = {}
+for i = 0, 11 do
+	local a = i * (math.pi / 6)
+	_WATER_DIRS[#_WATER_DIRS + 1] = {math.cos(a), math.sin(a)}
+end
+local function water_repel(pos)
+	local ax, az, nearest = 0, 0, nil
+	for _, d in ipairs(_WATER_DIRS) do
+		local cx, cz = d[1], d[2]
+		for r = 2, WATER_LOOKAHEAD, 2 do
+			local x, z = pos.x + cx * r, pos.z + cz * r
+			if _hazard_at(x, pos.y, z) then
+				local w = (WATER_LOOKAHEAD - r + 1)   -- closer hazard pushes harder
+				ax = ax - cx * w
+				az = az - cz * w
+				if nearest == nil or r < nearest then nearest = r end
+				break   -- only the nearest hazard along this ray
+			end
+		end
+	end
+	if nearest == nil then return nil end
+	local m = math.sqrt(ax * ax + az * az)
+	if m < 1e-6 then return nil end
+	return ax / m, az / m, nearest
+end
 
 -- executed when the player joins the game
 minetest.register_on_joinplayer(function(player, _last_login)
@@ -25,8 +279,33 @@ minetest.register_on_joinplayer(function(player, _last_login)
 
 	-- setup initial inventory
 	local inv = player:get_inventory()
-	for i=1, #init_tools do
-		inv:add_item("main", init_tools[i])
+	for i=1, #init_inv do
+		inv:add_item("main", init_inv[i])
+	end
+
+	minetest.set_timeofday(timeofday)
+
+	-- Hide VoxeLibre's mod-drawn HUD bars (health/hunger/armor/xp) when a
+	-- clean RGB observation is requested. Guarded so it is a no-op if the mods
+	-- are absent.
+	if CLEAN_RGB then
+		if minetest.global_exists("hb") and hb.hide_hudbar then
+			for _, bar in ipairs({"health", "breath", "armor", "hunger",
+			                      "exhaustion", "saturation", "absorption"}) do
+				pcall(hb.hide_hudbar, player, bar)
+			end
+		end
+		if minetest.global_exists("mcl_experience") and mcl_experience.remove_hud then
+			pcall(mcl_experience.remove_hud, player)
+		end
+		-- Apply the HUD flags immediately at join too (not just from the first
+		-- globalstep), so the very first captured frame already hides the hotbar
+		-- and the first-person wielded hand/item.
+		pcall(player.hud_set_flags, player, {
+			crosshair = false, basic_debug = false, chat = false,
+			hotbar = false, wielditem = false, healthbar = false,
+			breathbar = false, minimap = false, minimap_radar = false,
+		})
 	end
 
 end)
@@ -39,12 +318,6 @@ end)
 -- make game's time match with learning timesteps
 minetest.register_globalstep(function(dtime)
 
-	if timeofday > 1.0 then
-		timeofday = 0.0
-	end
-	minetest.set_timeofday(timeofday)
-	timeofday = timeofday + timeofday_step
-
 	local player = minetest.get_connected_players()[1]
 
 	-- if the player is not connected end here
@@ -52,160 +325,108 @@ minetest.register_globalstep(function(dtime)
 		return nil
 	end
 
-	-- disable HUD elements todo: make this a function --UNCOMMENT TO REMOVE ALL HUD
--- 	player:hud_set_flags({
--- 		crosshair = false,
--- 		basic_debug = false,
--- 		chat = false,
--- 		wielditem = false,
--- 		hotbar = false,
--- 		healthbar = false,
--- 		breathbar = false,
--- 	})
--- 	if hb then
--- 		hb.hide_hudbar(player, "health")
--- 		hb.hide_hudbar(player, "breath")
--- 		hb.hide_hudbar(player, "armor")
--- 		hb.hide_hudbar(player, "hunger")
--- 		hb.hide_hudbar(player, "exhaustion")
--- 		hb.hide_hudbar(player, "saturation")
--- 		hb.hide_hudbar(player, "progress_bar")
--- 		hb.hide_hudbar(player, "absorption")
--- 	end
--- 	if mcl_experience then
--- 		mcl_experience.remove_hud(player)
--- 	end
+	-- Relocate the player onto dry ground once, before data collection, if the
+	-- spawn is on/over water. Runs as soon as the surrounding map is loaded.
+	if SPAWN_ON_LAND and not player_relocated then
+		local ppos = player:get_pos()
+		local feet = minetest.get_node_or_nil({x = ppos.x, y = ppos.y - 0.5, z = ppos.z})
+		local here = minetest.get_node_or_nil({x = ppos.x, y = ppos.y + 0.1, z = ppos.z})
+		if feet ~= nil and here ~= nil then
+			-- Map is loaded around the player; decide if relocation is needed.
+			local on_water = _is_liquid(feet.name) or _is_liquid(here.name)
+			local near_water = has_water_near(math.floor(ppos.x + 0.5),
+				math.floor(ppos.y + 0.5), math.floor(ppos.z + 0.5), WATER_AVOID_RADIUS)
+			if on_water or near_water then
+				-- Prefer a spot with NO water within WATER_AVOID_RADIUS; if none
+				-- exists nearby, fall back to any dry spot so spawn never fails.
+				local dry, ready = find_dry_ground(ppos, WATER_AVOID_RADIUS)
+				if dry == nil and ready then
+					dry, ready = find_dry_ground(ppos, 0)
+				end
+				if dry ~= nil then
+					player:set_pos(dry)
+					pcall(function() player:add_velocity(vector.multiply(player:get_velocity() or {x=0,y=0,z=0}, -1)) end)
+					player_relocated = true
+					last_ground_pos = dry
+				elseif ready then
+					-- Map loaded but no dry ground within range; give up trying.
+					player_relocated = true
+				end
+			else
+				player_relocated = true  -- already on land, away from water
+				last_ground_pos = ppos
+			end
+		end
+	end
+
+	-- Keep the player on dry land for the whole episode. Each step we remember
+	-- the immediately-previous non-water position; the instant a step would put
+	-- the player on/into water we restore that position and cancel velocity. The
+	-- anchor is at most one small step away, so the player is simply *held at the
+	-- water's edge* (an invisible wall) rather than teleported backwards - it
+	-- never enters the water. Normal walking/jumping on land is untouched.
+	if KEEP_ON_LAND then
+		if player_over_water(player) then
+			-- Failsafe only (should be rare now): the player is actually on water,
+			-- ease it back to the last safe ground and kill horizontal velocity.
+			if last_ground_pos ~= nil then
+				pcall(function()
+					player:set_pos(last_ground_pos)
+					local v = player:get_velocity()
+					if v then player:add_velocity({x = -v.x, y = math.min(0, -v.y), z = -v.z}) end
+				end)
+			end
+		else
+			-- On safe land: remember it as the anchor. If the player is heading INTO
+			-- a nearby hazard (water/pit edge), cancel only that inward part of the
+			-- velocity so it doesn't step in. We do NOT add any outward push - adding
+			-- an impulse every frame accumulated and made the player move far too
+			-- fast; cancelling-only keeps normal Craftium movement speed.
+			last_ground_pos = player:get_pos()
+			local ax, az = water_repel(player:get_pos())
+			if ax ~= nil then
+				pcall(function()
+					local v = player:get_velocity() or {x = 0, y = 0, z = 0}
+					local tx, tz = -ax, -az                 -- direction toward the hazard
+					local comp = v.x * tx + v.z * tz        -- speed heading into it
+					if comp > 0 then                        -- moving toward hazard: null it out
+						player:add_velocity({x = -comp * tx, y = 0, z = -comp * tz})
+					end
+				end)
+			end
+		end
+	end
 
 	-- disable HUD elements -- normal HUD todo: check moving up in script
-	player:hud_set_flags({
-		crosshair = false,
-		basic_debug = false,
-		chat = false,
-	})
+	if CLEAN_RGB then
+		-- Also hide the hotbar and, crucially, the first-person wielded
+		-- hand/item (`wielditem`), for a clean RGB observation.
+		player:hud_set_flags({
+			crosshair = false,
+			basic_debug = false,
+			chat = false,
+			hotbar = false,
+			wielditem = false,
+			healthbar = false,
+			breathbar = false,
+			minimap = false,
+			minimap_radar = false,
+		})
+	else
+		player:hud_set_flags({
+			crosshair = false,
+			basic_debug = false,
+			chat = false,
+		})
+	end
 
 	-- if the player is connected:
 	local player_pos = player:get_pos()
 	if minetest.settings:get("voxel_obs") then
-		local voxel_data, voxel_light_data, voxel_param2_data = voxel_api:get_voxel_data(player_pos, voxel_radius)
-		set_voxel_data(voxel_data)
-		set_voxel_light_data(voxel_light_data)
-		set_voxel_param2_data(voxel_param2_data)
+		get_voxel_data_cpp(player_pos, voxel_radius)
 	end
 end)
 
 -- Optional dynamic-agent (mobs/animals) spawning + per-frame logging.
 -- Only active when `dynamic_agents_enable` is set; see dynamic_agents.lua.
 dofile(minetest.get_modpath("craftium_env") .. "/dynamic_agents.lua")
-
---
--- Tools
--- ~~~~~
-
-stages = {
-	-- Inital stage
-	{ name = "init" },
-	-- Wood stage
-	{
-		name = "wood", -- name of the stage
-		req_name = "tree", -- substring included in the target node's name
-		req_num = 2, -- number of resources (req_name) required to jump to the next stage
-		current = 0, -- number of (target) resources currently obtained
-		provides = { "mcl_tools:pick_wood", "mcl_tools:sword_wood" }, -- the tools provided upon completion
-		reward = 128.0, -- the reward of completing the stage
-	},
-	-- Stone stage
-	{
-		name = "stone",
-		req_name = "stone",
-		req_num = 3,
-		current = 0,
-		provides = { "mcl_tools:pick_stone", "mcl_tools:sword_stone" },
-		reward = 256.0,
-	},
-	-- Stone stage
-	{
-		name = "iron",
-		req_name = "iron",
-		req_num = 3,
-		current = 0,
-		provides = { "mcl_tools:pick_iron", "mcl_tools:sword_iron", "mcl_tools:axe_iron" },
-		reward = 1024.0,
-	},
-	{
-		name = "diamond",
-		req_name = "diamond",
-		req_num = 1,
-		current = 0,
-		provides = { "mcl_tools:pick_diamond", "mcl_tools:sword_diamond", "mcl_tools:axe_diamond" },
-		reward = 2048.0,
-	},
-	{ name = "end" }
-}
-
-curr_stage = 1 -- index of the current stage
-
-minetest.register_on_dignode(function(pos, node)
-	-- table of the next stage
-	local snext = stages[curr_stage+1]
-
-	-- there's nothing to do if we reached the last stage
-	if snext.name == "end" then
-		return
-	end
-
-	-- check if the dug node contains the `req_name` substring
-	if string.find(node["name"], snext.req_name) then
-		snext.current = snext.current + 1
-	end
-
-	-- check if we've enough resources to jump to the next stage
-	if snext.current >= snext.req_num then
-		print(string.format("[STAGE] Stage '%s' starts", snext.name), os.date())
-
-		-- provide one timestep reward
-		set_reward_once(snext.reward, 0.0)
-
-		-- add new tools to the inventory (removing the current ones first)
-		for _, player in pairs(minetest.get_connected_players()) do
-			local inv = player:get_inventory()
-			inv:set_list("main", {}) -- empty inventory
-			for i=1, #init_tools do -- reset initial inventory (in the same slots)
-				inv:add_item("main", init_tools[i])
-			end
-			for i = 1, #snext.provides do -- add the unlocked tools
-				inv:add_item("main", snext.provides[i])
-			end
-		end
-
-		-- Move to the next stage
-		curr_stage = curr_stage + 1
-	end
-end)
-
-
---
--- Hunt and Defend
--- ~~~~~~~~~~~~~~~
-
-for name, _ in pairs(mcl_mobs.spawning_mobs) do -- for all mobs that spawn
-	-- access its definition
-	local mob_def = minetest.registered_entities[name]
-	local mob_type = mob_def.type
-	local old_on_punch = mob_def.on_punch
-	mob_def.on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir)
-		local damage = tool_capabilities.damage_groups
-			and tool_capabilities.damage_groups.fleshy or 1
-		-- provide a different reward for each type of punched mob
-		if mob_type == "monster" then
-			set_reward_once(damage, 0.0)
-		elseif mob_type == "animal" then
-			set_reward_once(damage*0.5, 0.0)
-		elseif mob_type == "npc" then
-			set_reward_once(-10.0, 0.0)
-		end
-		-- Call the original on_punch function
-		if old_on_punch ~= nil then
-			old_on_punch(self, puncher, time_from_last_punch, tool_capabilities, dir)
-		end
-	end
-end
