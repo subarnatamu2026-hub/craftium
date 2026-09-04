@@ -121,6 +121,16 @@ local VIEW_HALF_ANGLE = setting_number("dynamic_agents_view_half_angle", 65.0)
 local VIEW_COS        = math.cos(math.rad(VIEW_HALF_ANGLE))
 local VIEW_EYE_HEIGHT = 1.5   -- approx player eye height above feet
 
+-- Spawn the INITIAL population INSIDE the player's forward view cone so every
+-- mob starts on-screen. The half-angle is kept a little narrower than the real
+-- horizontal FOV (~52 deg at fov=72, 16:9) so the mobs render comfortably inside
+-- the frame rather than clipping at the edges. If the cone can't fit all mobs
+-- (too_close / no ground), spawning falls back to anywhere-around the player so
+-- the target count is still reached.
+local SPAWN_IN_VIEW          = setting_true("dynamic_agents_spawn_in_view", true)
+local SPAWN_VIEW_HALF_ANGLE  = setting_number("dynamic_agents_spawn_view_half_angle", 45.0)
+local SPAWN_VIEW_COS         = math.cos(math.rad(SPAWN_VIEW_HALF_ANGLE))
+
 -- The base game (VoxeLibre) keeps spawning its own ambient mobs all over the
 -- terrain, which would flood the scene with far more creatures than our fixed
 -- set. We remove any mob (mobs_mc:*) that we did not spawn ourselves - ours are
@@ -314,6 +324,18 @@ local function in_view(player, pos)
 	return dot >= VIEW_COS
 end
 
+-- Is world position `pos` inside the NARROW forward spawn cone (so it renders
+-- comfortably inside the frame)? Used only for placing the initial population.
+local function in_spawn_view(player, pos)
+	local eye = player:get_pos()
+	eye.y = eye.y + VIEW_EYE_HEIGHT
+	local dir = player:get_look_dir()
+	local dx, dy, dz = pos.x - eye.x, pos.y - eye.y, pos.z - eye.z
+	local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+	if len < 1e-3 then return true end
+	return (dx * dir.x + dy * dir.y + dz * dir.z) / len >= SPAWN_VIEW_COS
+end
+
 -- Is `pos` too close (horizontally) to an already-placed mob? Keeps the herd
 -- sparse so mobs don't clump in one spot.
 local function too_close(pos)
@@ -338,11 +360,25 @@ end
 -- too_close(). When `avoid_view` is set, the spot must also be OUTSIDE the
 -- player's current view cone (used for mid-episode respawn/relocation so mobs are
 -- never seen to appear). Returns (ground_pos, map_ready).
-local function find_spawn_ground(player, player_pos, avoid_view)
+local function find_spawn_ground(player, player_pos, avoid_view, require_view)
 	local map_ready = false
 	local gate = avoid_view and player ~= nil
+	local viewgate = require_view and player ~= nil
+	-- When we must place inside the view cone, sample bearings directly within
+	-- +-SPAWN_VIEW_HALF_ANGLE of the look direction instead of the full 360, so
+	-- attempts aren't wasted behind the player.
+	local look_bearing = 0.0
+	if viewgate then
+		local d = player:get_look_dir()
+		look_bearing = math.atan2(d.z, d.x)   -- bearing in the (x=cos, z=sin) param
+	end
 	for _ = 1, 24 do
-		local angle = math.random() * 2 * math.pi
+		local angle
+		if viewgate then
+			angle = look_bearing + (math.random() * 2 - 1) * math.rad(SPAWN_VIEW_HALF_ANGLE)
+		else
+			angle = math.random() * 2 * math.pi
+		end
 		local r = MIN_RADIUS + math.random() * (MAX_RADIUS - MIN_RADIUS)
 		local cand = {x = player_pos.x + r * math.cos(angle),
 		              y = player_pos.y,
@@ -351,7 +387,8 @@ local function find_spawn_ground(player, player_pos, avoid_view)
 			local ground, ready = find_ground(cand)
 			map_ready = map_ready or ready
 			if ground ~= nil and not too_close(ground)
-			   and not (gate and in_view(player, ground)) then
+			   and not (gate and in_view(player, ground))
+			   and not (viewgate and not in_spawn_view(player, ground)) then
 				return ground, true
 			end
 		end
@@ -373,7 +410,15 @@ local function spawn_agent(slot, player_pos, player, avoid_view)
 		return false, true
 	end
 
-	local ground, map_ready = find_spawn_ground(player, player_pos, avoid_view)
+	-- Only the INITIAL population (avoid_view=false) is placed inside the view
+	-- cone; mid-episode respawns (avoid_view=true) are placed off-screen as before.
+	local want_view = SPAWN_IN_VIEW and not avoid_view
+	local ground, map_ready = find_spawn_ground(player, player_pos, avoid_view, want_view)
+	if ground == nil and want_view then
+		-- Couldn't fit inside the forward cone (e.g. no ground / too clumped);
+		-- fall back to anywhere-around so we still reach the target count.
+		ground, map_ready = find_spawn_ground(player, player_pos, avoid_view, false)
+	end
 	if ground == nil then
 		return false, map_ready
 	end
