@@ -78,33 +78,114 @@ local function has_water_near(x, y, z, radius)
 	return false
 end
 
--- Find a dry ground surface near `pos`. Scans expanding rings and returns a
--- standing position (surface + 1) whose surface node is solid and the two nodes
--- above are air/non-liquid. When `avoid_radius` > 0 the spot must also have NO
--- water within that radius (so the player spawns away from shorelines). Returns
--- nil if none found or the map isn't ready.
+-- Foliage / tree material we must not treat as ground (no spawning on leaves).
+local function _is_leaflike(name)
+	return minetest.get_item_group(name, "leaves") > 0
+	    or minetest.get_item_group(name, "tree") > 0
+	    or minetest.get_item_group(name, "sapling") > 0
+end
+
+-- No solid node within `up` blocks above -> open to the sky (not a cave/tunnel).
+local function _open_sky(x, y, z, up)
+	for dy = 1, up do
+		local n = minetest.get_node_or_nil({x = x, y = y + dy, z = z})
+		if n ~= nil and minetest.registered_nodes[n.name]
+		   and minetest.registered_nodes[n.name].walkable then
+			return false
+		end
+	end
+	return true
+end
+
+-- Top solid, non-liquid, non-leaf surface height at column (x,z) near y, or nil.
+local function _surface_y(x, y, z)
+	for yy = y + 6, y - 24, -1 do
+		local n = minetest.get_node_or_nil({x = x, y = yy, z = z})
+		if n ~= nil then
+			local def = minetest.registered_nodes[n.name]
+			if def and def.walkable and not _is_liquid(n.name) and not _is_leaflike(n.name) then
+				return yy
+			end
+		end
+	end
+	return nil
+end
+
+-- Is the ground around (x,z) roughly level (no cliff edge / pit rim)? Every
+-- neighbour column within `radius` must have ground no more than `max_drop`
+-- below (and not missing) -> not on the lip of a cliff or a hole.
+local function _flat_around(x, y, z, radius, max_drop)
+	for dx = -radius, radius do
+		for dz = -radius, radius do
+			if dx ~= 0 or dz ~= 0 then
+				local sy = _surface_y(x + dx, y, z + dz)
+				if sy == nil or (y - sy) > max_drop or (sy - y) > max_drop then
+					return false
+				end
+			end
+		end
+	end
+	return true
+end
+
+-- No solid nodes at body height within `radius` -> not wedged inside trees/walls.
+local function _clear_around(x, y, z, radius)
+	for dx = -radius, radius do
+		for dz = -radius, radius do
+			for dy = 1, 2 do
+				local n = minetest.get_node_or_nil({x = x + dx, y = y + dy, z = z + dz})
+				if n ~= nil and minetest.registered_nodes[n.name]
+				   and minetest.registered_nodes[n.name].walkable then
+					return false
+				end
+			end
+		end
+	end
+	return true
+end
+
+-- Is the surface node at (x,y,z) a good place to stand? `strict` additionally
+-- requires open sky (not a cave), flat surroundings (not a cliff edge / pit) and
+-- clear body space (not inside trees/walls).
+local function _good_surface(x, y, z, avoid_radius, strict)
+	local n = minetest.get_node_or_nil({x = x, y = y, z = z})
+	if n == nil or not _is_solid(n.name) or _is_leaflike(n.name) then return false end
+	local a1 = minetest.get_node_or_nil({x = x, y = y + 1, z = z})
+	local a2 = minetest.get_node_or_nil({x = x, y = y + 2, z = z})
+	if a1 == nil or a2 == nil then return false end
+	if minetest.registered_nodes[a1.name].walkable or _is_liquid(a1.name) or _is_liquid(a2.name) then
+		return false
+	end
+	if avoid_radius > 0 and has_water_near(x, y, z, avoid_radius) then return false end
+	if strict then
+		if not _open_sky(x, y, z, 8) then return false end        -- not a cave
+		if not _clear_around(x, y, z, 1) then return false end     -- not in trees/walls
+		if not _flat_around(x, y, z, 2, 2) then return false end   -- not a cliff edge / pit
+	end
+	return true
+end
+
+-- Find a good standing position near `pos`. Two passes: first STRICT (open sky,
+-- flat, clear of trees, dry) so the player never spawns in a cave, on a cliff
+-- edge, inside trees, or by water; then a RELAXED pass (dry, real ground) as a
+-- fallback so spawning never fails. Returns standing pos (surface+1) or nil.
 local function find_dry_ground(pos, avoid_radius)
 	avoid_radius = avoid_radius or 0
 	local cx, cy, cz = math.floor(pos.x + 0.5), math.floor(pos.y + 0.5), math.floor(pos.z + 0.5)
 	local map_ready = false
-	for r = 0, 40, 2 do
-		for dx = -r, r, 2 do
-			for dz = -r, r, 2 do
-				-- only the ring at radius r
-				if math.abs(dx) == r or math.abs(dz) == r or r == 0 then
-					local x, z = cx + dx, cz + dz
-					for y = cy + 12, cy - 16, -1 do
-						local n = minetest.get_node_or_nil({x = x, y = y, z = z})
-						if n ~= nil then
-							map_ready = true
-							local above = minetest.get_node_or_nil({x = x, y = y + 1, z = z})
-							local above2 = minetest.get_node_or_nil({x = x, y = y + 2, z = z})
-							if _is_solid(n.name) and above ~= nil and above2 ~= nil
-							   and not minetest.registered_nodes[above.name].walkable
-							   and not _is_liquid(above.name)
-							   and not _is_liquid(above2.name)
-							   and (avoid_radius <= 0 or not has_water_near(x, y, z, avoid_radius)) then
-								return {x = x, y = y + 1, z = z}, map_ready
+	for _, strict in ipairs({true, false}) do
+		for r = 0, 40, 2 do
+			for dx = -r, r, 2 do
+				for dz = -r, r, 2 do
+					if math.abs(dx) == r or math.abs(dz) == r or r == 0 then
+						local x, z = cx + dx, cz + dz
+						for y = cy + 12, cy - 16, -1 do
+							local n = minetest.get_node_or_nil({x = x, y = y, z = z})
+							if n ~= nil then
+								map_ready = true
+								if _good_surface(x, y, z, avoid_radius, strict) then
+									return {x = x, y = y + 1, z = z}, map_ready
+								end
 							end
 						end
 					end
@@ -127,10 +208,42 @@ local function player_over_water(player)
 	return false
 end
 
--- Look around the player for water within WATER_LOOKAHEAD and return a unit
--- direction pointing AWAY from it (plus the distance to the nearest water), or
--- nil if there's no water nearby. Sampled along 12 rays so the push points away
--- from whichever shore is closest.
+-- Is (x,z) near height y a HAZARD to walk toward? True for: water, a solid wall
+-- at body height, or an edge/pit (no ground within EDGE_DROP below). Used to
+-- steer the player away from water, walls and drop-offs before it reaches them.
+local EDGE_DROP = 3
+local function _hazard_at(x, y, z)
+	-- water at/just below foot level
+	for dy = 1, -3, -1 do
+		local n = minetest.get_node_or_nil({x = x, y = y + dy, z = z})
+		if n ~= nil and _is_liquid(n.name) then return true end
+	end
+	-- a real WALL ahead (solid at both body blocks, i.e. >=2 tall, not a step the
+	-- player can just walk up)
+	local w1 = minetest.get_node_or_nil({x = x, y = y + 1, z = z})
+	local w2 = minetest.get_node_or_nil({x = x, y = y + 2, z = z})
+	if w1 ~= nil and w2 ~= nil
+	   and minetest.registered_nodes[w1.name] and minetest.registered_nodes[w1.name].walkable
+	   and minetest.registered_nodes[w2.name] and minetest.registered_nodes[w2.name].walkable then
+		return true
+	end
+	-- an edge / pit: no solid ground within EDGE_DROP below
+	for dy = 0, -EDGE_DROP, -1 do
+		local n = minetest.get_node_or_nil({x = x, y = y + dy, z = z})
+		if n ~= nil then
+			local def = minetest.registered_nodes[n.name]
+			if def and def.walkable and not _is_liquid(n.name) then
+				return false   -- ground found -> not an edge
+			end
+		end
+	end
+	return true   -- nothing solid below within EDGE_DROP -> a drop-off
+end
+
+-- Look around the player within WATER_LOOKAHEAD for hazards (water / walls /
+-- edges) and return a unit direction AWAY from them plus the nearest distance,
+-- or nil if none. Sampled along 12 rays so the push points away from whichever
+-- hazard is closest.
 local _WATER_DIRS = {}
 for i = 0, 11 do
 	local a = i * (math.pi / 6)
@@ -142,17 +255,12 @@ local function water_repel(pos)
 		local cx, cz = d[1], d[2]
 		for r = 2, WATER_LOOKAHEAD, 2 do
 			local x, z = pos.x + cx * r, pos.z + cz * r
-			local hit = false
-			for dy = 1, -3, -1 do
-				local n = minetest.get_node_or_nil({x = x, y = pos.y + dy, z = z})
-				if n ~= nil and _is_liquid(n.name) then hit = true break end
-			end
-			if hit then
-				local w = (WATER_LOOKAHEAD - r + 1)   -- closer water pushes harder
+			if _hazard_at(x, pos.y, z) then
+				local w = (WATER_LOOKAHEAD - r + 1)   -- closer hazard pushes harder
 				ax = ax - cx * w
 				az = az - cz * w
 				if nearest == nil or r < nearest then nearest = r end
-				break   -- only the nearest water along this ray
+				break   -- only the nearest hazard along this ray
 			end
 		end
 	end

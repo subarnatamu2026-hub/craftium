@@ -183,6 +183,39 @@ local function mob_over_water(p)
 	    or (below ~= nil and _node_is_liquid(below.name))
 end
 
+-- Scan around a mob (8 directions, up to `look` blocks) for water and return a
+-- unit direction AWAY from the nearest water, or nil if none is close. Lets mobs
+-- steer away from shorelines instead of walking into the water.
+local _MOB_WATER_DIRS = {}
+for i = 0, 7 do
+	local a = i * (math.pi / 4)
+	_MOB_WATER_DIRS[#_MOB_WATER_DIRS + 1] = {math.cos(a), math.sin(a)}
+end
+local function mob_water_repel(p, look)
+	local ax, az, found = 0, 0, false
+	for _, d in ipairs(_MOB_WATER_DIRS) do
+		for r = 1, look do
+			local x, z = p.x + d[1] * r, p.z + d[2] * r
+			local hit = false
+			for dy = 0, -2, -1 do
+				local n = minetest.get_node_or_nil({x = x, y = p.y + dy, z = z})
+				if n ~= nil and _node_is_liquid(n.name) then hit = true break end
+			end
+			if hit then
+				local w = (look - r + 1)
+				ax = ax - d[1] * w
+				az = az - d[2] * w
+				found = true
+				break
+			end
+		end
+	end
+	if not found then return nil end
+	local m = math.sqrt(ax * ax + az * az)
+	if m < 1e-6 then return nil end
+	return ax / m, az / m
+end
+
 -- Hard-clamp a live mob's horizontal velocity to MAX_SPEED (keeps vertical
 -- velocity for natural falling/jumping). Safety net for physics/push spikes.
 local function clamp_speed(obj)
@@ -229,6 +262,17 @@ end
 -- solid node with a non-solid node above it (so we don't pick the underside of
 -- an overhang). Returns a spawn position resting ON that surface (feet just above
 -- it, so the mob does NOT drop from the sky), or nil if the map isn't loaded yet.
+-- Foliage/tree material a mob must NOT be spawned on top of (leaves/canopy).
+local function _is_leaflike(name)
+	return minetest.get_item_group(name, "leaves") > 0
+	    or minetest.get_item_group(name, "tree") > 0
+	    or minetest.get_item_group(name, "sapling") > 0
+end
+local function _is_liquid_node(name)
+	local def = minetest.registered_nodes[name]
+	return def ~= nil and def.liquidtype ~= nil and def.liquidtype ~= "none"
+end
+
 local function find_ground(pos)
 	local map_ready = false
 	local base = math.floor(pos.y + 0.5)
@@ -238,10 +282,14 @@ local function find_ground(pos)
 		if node ~= nil then
 			map_ready = true
 			local def = minetest.registered_nodes[node.name]
-			if def and def.walkable then
+			-- must be SOLID ground: walkable, not a liquid, not leaves/tree canopy
+			-- (so mobs never spawn on water or on top of trees).
+			if def and def.walkable and not _is_liquid_node(node.name)
+			   and not _is_leaflike(node.name) then
 				local above = minetest.get_node_or_nil({x = p.x, y = p.y + 1, z = p.z})
 				local adef = above and minetest.registered_nodes[above.name]
-				if not (adef and adef.walkable) then
+				-- surface must have open (non-solid, non-liquid) space above it
+				if not (adef and adef.walkable) and not (above and _is_liquid_node(above.name)) then
 					-- node centre is p.y; its top is p.y+0.5 -> place feet just above
 					return {x = pos.x, y = p.y + 0.6, z = pos.z}, map_ready
 				end
@@ -349,6 +397,11 @@ local function spawn_agent(slot, player_pos, player, avoid_view)
 	lua.persistent = true
 	lua.despawn_immediately = false
 	lua._dyn_slot = slot
+	-- Ensure the mob is physical and collides with terrain (voxels are rigid to
+	-- it) so it can't pass through blocks - it bumps into them instead.
+	pcall(function()
+		obj:set_properties({physical = true, collide_with_objects = true})
+	end)
 	if NEUTRAL then neutralize(lua) end
 	tracked[slot] = obj
 	return true, map_ready
@@ -760,18 +813,25 @@ minetest.register_globalstep(function(_dtime)
 	if spawned then
 		leash_agents(player, player_pos)
 		declump_agents()
-		-- Pull any water-straying mob back toward the (land) player, then cap every
-		-- mob's speed AFTER leash/declump/AI have set velocities, so the logged
-		-- velocities and the on-screen motion are both within MAX_SPEED.
+		-- Steer mobs away from water (both when near a shore and when already on
+		-- it), then cap every mob's speed AFTER leash/declump/AI have set
+		-- velocities, so logged velocities and on-screen motion are within MAX_SPEED.
 		for slot = 1, NUM_AGENTS do
 			local obj = tracked[slot]
 			if obj ~= nil and obj:get_luaentity() ~= nil then
 				local p = obj:get_pos()
-				if p ~= nil and mob_over_water(p) then
-					local dx, dz = player_pos.x - p.x, player_pos.z - p.z
-					local d = math.sqrt(dx * dx + dz * dz)
-					if d > 0.01 then
-						pcall(function() obj:add_velocity({x = (dx / d) * 2.0, y = 0, z = (dz / d) * 2.0}) end)
+				if p ~= nil then
+					-- proactive: if water is within a few blocks, push away from it
+					local wx, wz = mob_water_repel(p, 4)
+					if wx ~= nil then
+						pcall(function() obj:add_velocity({x = wx * 2.0, y = 0, z = wz * 2.0}) end)
+					elseif mob_over_water(p) then
+						-- already on water (no dry side found nearby): head to player/land
+						local dx, dz = player_pos.x - p.x, player_pos.z - p.z
+						local d = math.sqrt(dx * dx + dz * dz)
+						if d > 0.01 then
+							pcall(function() obj:add_velocity({x = (dx / d) * 2.0, y = 0, z = (dz / d) * 2.0}) end)
+						end
 					end
 				end
 				clamp_speed(obj)
