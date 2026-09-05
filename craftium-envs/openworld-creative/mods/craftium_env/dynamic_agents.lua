@@ -66,7 +66,7 @@ end
 -- placeholder, so we must never try to spawn those.
 local function is_registered(name)
 	return minetest.registered_entities ~= nil
-	       and minetest.registered_entities[name] ~= nil
+		   and minetest.registered_entities[name] ~= nil
 end
 do
 	local valid = {}
@@ -87,7 +87,7 @@ local AGENT_NAME = ENTITY_LIST[1]
 
 -- Number of agents: random in [count_min, count_max] if given, else count.
 local COUNT_MIN = math.floor(setting_number("dynamic_agents_count_min",
-                    setting_number("dynamic_agents_count", 4)))
+					setting_number("dynamic_agents_count", 4)))
 local COUNT_MAX = math.floor(setting_number("dynamic_agents_count_max", 7))
 if COUNT_MAX < COUNT_MIN then COUNT_MAX = COUNT_MIN end
 local NUM_AGENTS = math.random(COUNT_MIN, COUNT_MAX)
@@ -190,7 +190,7 @@ local function mob_over_water(p)
 	local at = minetest.get_node_or_nil({x = p.x, y = p.y + 0.1, z = p.z})
 	local below = minetest.get_node_or_nil({x = p.x, y = p.y - 0.3, z = p.z})
 	return (at ~= nil and _node_is_liquid(at.name))
-	    or (below ~= nil and _node_is_liquid(below.name))
+		or (below ~= nil and _node_is_liquid(below.name))
 end
 
 -- Scan around a mob (8 directions, up to `look` blocks) for water and return a
@@ -275,8 +275,8 @@ end
 -- Foliage/tree material a mob must NOT be spawned on top of (leaves/canopy).
 local function _is_leaflike(name)
 	return minetest.get_item_group(name, "leaves") > 0
-	    or minetest.get_item_group(name, "tree") > 0
-	    or minetest.get_item_group(name, "sapling") > 0
+		or minetest.get_item_group(name, "tree") > 0
+		or minetest.get_item_group(name, "sapling") > 0
 end
 local function _is_liquid_node(name)
 	local def = minetest.registered_nodes[name]
@@ -381,8 +381,8 @@ local function find_spawn_ground(player, player_pos, avoid_view, require_view)
 		end
 		local r = MIN_RADIUS + math.random() * (MAX_RADIUS - MIN_RADIUS)
 		local cand = {x = player_pos.x + r * math.cos(angle),
-		              y = player_pos.y,
-		              z = player_pos.z + r * math.sin(angle)}
+					  y = player_pos.y,
+					  z = player_pos.z + r * math.sin(angle)}
 		if not (gate and in_view(player, cand)) then
 			local ground, ready = find_ground(cand)
 			map_ready = map_ready or ready
@@ -568,8 +568,8 @@ end
 
 -- Bone names to probe on engines without get_bone_overrides() (legacy fallback).
 local BONE_PROBE = {"head", "Head", "Head_Control", "body", "Body",
-                    "Arm_Right", "Arm_Left",
-                    "Arm_Right_Pitch_Control", "Arm_Left_Pitch_Control"}
+					"Arm_Right", "Arm_Left",
+					"Arm_Right_Pitch_Control", "Arm_Left_Pitch_Control"}
 
 -- Which animation clip is currently playing (frame range + speed).
 local function read_animation(obj)
@@ -578,7 +578,7 @@ local function read_animation(obj)
 	end)
 	if ok and range then
 		return {range = {x = range.x or 0, y = range.y or 0},
-		        speed = speed or 0, blend = blend or 0}
+				speed = speed or 0, blend = blend or 0}
 	end
 	return {range = {x = 0, y = 0}, speed = 0, blend = 0}
 end
@@ -743,7 +743,7 @@ local function read_player(player)
 	local at    = minetest.get_node_or_nil({x = pos.x, y = pos.y + 0.1, z = pos.z})
 	local below = minetest.get_node_or_nil({x = pos.x, y = pos.y - 0.5, z = pos.z})
 	local on_water = ((at ~= nil and _node_is_liquid(at.name))
-	              or (below ~= nil and _node_is_liquid(below.name))) and 1 or 0
+				  or (below ~= nil and _node_is_liquid(below.name))) and 1 or 0
 
 	return {
 		present = 1,
@@ -768,7 +768,7 @@ local function write_meta()
 		metas[slot] = agent_meta[slot] or {slot = slot, name = slot_entity[slot] or AGENT_NAME}
 	end
 	local record = {kind = "meta", num_agents = NUM_AGENTS, agents = metas,
-	                player = player_meta or {name = "player"}}
+					player = player_meta or {name = "player"}}
 	local ok, line = pcall(minetest.write_json, record)
 	if ok and line then
 		log_file:write(line .. "\n")
@@ -790,11 +790,11 @@ local function log_frame(player)
 		local rec = read_agent(slot)
 		if rec == nil then
 			rec = {slot = slot, name = slot_entity[slot] or AGENT_NAME, present = 0,
-			       pos = {x = 0, y = 0, z = 0}, vel = {x = 0, y = 0, z = 0},
-			       yaw = 0, rotation = {x = 0, y = 0, z = 0},
-			       collisionbox = {0, 0, 0, 0, 0, 0}, hp = 0,
-			       sheared = 0, baby = 0, color = "",
-			       anim = {range = {x = 0, y = 0}, speed = 0, blend = 0}, bones = {}}
+				   pos = {x = 0, y = 0, z = 0}, vel = {x = 0, y = 0, z = 0},
+				   yaw = 0, rotation = {x = 0, y = 0, z = 0},
+				   collisionbox = {0, 0, 0, 0, 0, 0}, hp = 0,
+				   sheared = 0, baby = 0, color = "",
+				   anim = {range = {x = 0, y = 0}, speed = 0, blend = 0}, bones = {}}
 		end
 		agents[slot] = rec
 	end

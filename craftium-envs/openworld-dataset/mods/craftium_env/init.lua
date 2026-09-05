@@ -14,9 +14,9 @@ local init_inv_string = minetest.settings:get("starting_inventory_creative")
 -- Parse into a Lua table
 init_inv = {}
 if init_inv_string then
-    for item in string.gmatch(init_inv_string, '([^,]+)') do
-        table.insert(init_inv, item)
-    end
+	for item in string.gmatch(init_inv_string, '([^,]+)') do
+		table.insert(init_inv, item)
+	end
 end
 
 timeofday = tonumber(minetest.settings:get("world_start_time"))/24000
@@ -79,8 +79,8 @@ end
 -- Foliage / tree material we must not treat as ground (no spawning on leaves).
 local function _is_leaflike(name)
 	return minetest.get_item_group(name, "leaves") > 0
-	    or minetest.get_item_group(name, "tree") > 0
-	    or minetest.get_item_group(name, "sapling") > 0
+		or minetest.get_item_group(name, "tree") > 0
+		or minetest.get_item_group(name, "sapling") > 0
 end
 
 -- No solid node within `up` blocks above -> open to the sky (not a cave/tunnel).
@@ -231,7 +231,7 @@ minetest.register_on_joinplayer(function(player, _last_login)
 	if CLEAN_RGB then
 		if minetest.global_exists("hb") and hb.hide_hudbar then
 			for _, bar in ipairs({"health", "breath", "armor", "hunger",
-			                      "exhaustion", "saturation", "absorption"}) do
+								  "exhaustion", "saturation", "absorption"}) do
 				pcall(hb.hide_hudbar, player, bar)
 			end
 		end
