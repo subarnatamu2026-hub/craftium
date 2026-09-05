@@ -298,20 +298,14 @@ minetest.register_globalstep(function(dtime)
 		end
 	end
 
-	-- Keep the player out of the water for the whole episode - and ONLY the water.
-	-- No velocity is ever added or cancelled here. Each frame we simply remember
-	-- the last dry-land position; the instant a step lands the player on/into
-	-- water we set the position back to that anchor. The player is held at the
-	-- water's edge (position-only, one step back). Walls, trees and cliff edges
-	-- are left completely alone - normal Craftium movement is untouched.
-	if KEEP_ON_LAND then
-		if player_over_water(player) then
-			if last_ground_pos ~= nil then
-				pcall(function() player:set_pos(last_ground_pos) end)
-			end
-		else
-			last_ground_pos = player:get_pos()
-		end
+	-- Water handling: we NO LONGER teleport the player back at the water's edge -
+	-- that per-frame snap-back is what made the camera shake violently. Instead the
+	-- player is spawned on dry land (SPAWN_ON_LAND) and simply left to move; every
+	-- frame we record whether it is currently on/over water (see read_player's
+	-- `on_water`). The PERSIST generator reads that flag and DISCARDS + reseeds any
+	-- level where the player entered the water, so no shaky/underwater clip is kept.
+	if KEEP_ON_LAND and not player_over_water(player) then
+		last_ground_pos = player:get_pos()   -- kept only for the spawn failsafe
 	end
 
 	-- disable HUD elements -- normal HUD todo: check moving up in script

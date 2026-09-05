@@ -737,12 +737,21 @@ local function read_player(player)
 		meta_dirty = true
 	end
 
+	-- Whether the player is currently on/over water this frame. The PERSIST
+	-- generator reads this and discards+reseeds any level where it is ever 1, so
+	-- no clip with the player in the water (and the resulting shaking) is kept.
+	local at    = minetest.get_node_or_nil({x = pos.x, y = pos.y + 0.1, z = pos.z})
+	local below = minetest.get_node_or_nil({x = pos.x, y = pos.y - 0.5, z = pos.z})
+	local on_water = ((at ~= nil and _node_is_liquid(at.name))
+	              or (below ~= nil and _node_is_liquid(below.name))) and 1 or 0
+
 	return {
 		present = 1,
 		pos = {x = pos.x, y = pos.y, z = pos.z},
 		yaw = yaw,
 		rotation = {x = pitch, y = yaw, z = 0},
 		collisionbox = cbox,
+		on_water = on_water,
 		anim = read_animation(player),
 		bones = read_bones(player),
 	}
