@@ -92,11 +92,11 @@ local COUNT_MAX = math.floor(setting_number("dynamic_agents_count_max", 7))
 if COUNT_MAX < COUNT_MIN then COUNT_MAX = COUNT_MIN end
 local NUM_AGENTS = math.random(COUNT_MIN, COUNT_MAX)
 
-local MIN_RADIUS    = setting_number("dynamic_agents_min_radius", 4.0)
-local MAX_RADIUS    = setting_number("dynamic_agents_max_radius", 12.0)
+local MIN_RADIUS    = setting_number("dynamic_agents_min_radius", 3.0)
+local MAX_RADIUS    = setting_number("dynamic_agents_max_radius", 10.0)
 -- Minimum horizontal spacing between mobs at spawn/relocation, so the herd is
 -- spread out (sparse) instead of clustered in one spot.
-local MIN_SEPARATION = setting_number("dynamic_agents_min_separation", 4.0)
+local MIN_SEPARATION = setting_number("dynamic_agents_min_separation", 3.0)
 -- Keep the population topped up if mobs die/despawn during the episode.
 local MAINTAIN      = setting_true("dynamic_agents_maintain", true)
 -- Spawn the initial population ONCE and never create or relocate a mob again
@@ -107,7 +107,7 @@ local SPAWN_ONCE    = setting_true("dynamic_agents_spawn_once", true)
 -- Keep mobs near the player (so they stay observable within the episode): any
 -- mob that strays beyond this horizontal distance is relocated back near the
 -- player. 0 disables.
-local LEASH_RADIUS  = setting_number("dynamic_agents_leash_radius", 14.0)
+local LEASH_RADIUS  = setting_number("dynamic_agents_leash_radius", 12.0)
 -- Make every spawned mob behave like a passive land animal: no attacking /
 -- chasing, no self-destruct, no environmental death - just wander around.
 local NEUTRAL       = setting_true("dynamic_agents_neutral", true)
@@ -840,7 +840,10 @@ minetest.register_globalstep(function(_dtime)
 					break
 				end
 			end
-			if all_done or frame > 90 then
+			-- Deadline raised to 150: the env runs init_frames (200) before the first
+			-- recorded frame, so this gives the full population more attempts to place
+			-- (all present from the very start) while still bailing out on bad terrain.
+			if all_done or frame > 150 then
 				spawned = true
 			end
 		end
