@@ -87,8 +87,8 @@ local AGENT_NAME = ENTITY_LIST[1]
 
 -- Number of agents: random in [count_min, count_max] if given, else count.
 local COUNT_MIN = math.floor(setting_number("dynamic_agents_count_min",
-                    setting_number("dynamic_agents_count", 10)))
-local COUNT_MAX = math.floor(setting_number("dynamic_agents_count_max", COUNT_MIN))
+                    setting_number("dynamic_agents_count", 4)))
+local COUNT_MAX = math.floor(setting_number("dynamic_agents_count_max", 7))
 if COUNT_MAX < COUNT_MIN then COUNT_MAX = COUNT_MIN end
 local NUM_AGENTS = math.random(COUNT_MIN, COUNT_MAX)
 
